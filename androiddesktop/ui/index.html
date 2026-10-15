@@ -47,9 +47,10 @@
          Android runs quietly in the background, entirely on this PC.</p>
       <ul class="facts">
         <li><span class="glyph">&#xE896;</span>About 2.4 GB to download, once</li>
-        <li><span class="glyph">&#xEDA2;</span>Uses about 10 GB of disk</li>
+        <li><span class="glyph">&#xEDA2;</span>Uses about 7 GB of disk</li>
         <li><span class="glyph">&#xE72E;</span>Nothing leaves your PC</li>
       </ul>
+      <div class="notices" id="setup-notices"></div>
       <button class="primary" id="setup-go">Set up Android</button>
       <div class="progress" id="setup-progress" hidden>
         <div class="bar"><div class="fill" id="setup-fill"></div></div>
@@ -60,6 +61,19 @@
   </section>
 
   <section class="home" id="home">
+    <div class="notices" id="notices"></div>
+    <form class="unlock" id="unlock" hidden autocomplete="off">
+      <span class="unlock-icon glyph">&#xE72E;</span>
+      <div class="unlock-text">
+        <b>Android is locked</b>
+        <p>Enter the PIN or password you set in Android. Your apps and their data stay locked until then.</p>
+        <div class="unlock-row">
+          <input id="pin" type="password" placeholder="PIN or password" maxlength="64" spellcheck="false" autocomplete="off">
+          <button class="primary small" id="unlock-go" type="submit">Unlock</button>
+        </div>
+        <p class="unlock-error" id="unlock-error" hidden></p>
+      </div>
+    </form>
     <label class="search">
       <span class="glyph">&#xE721;</span>
       <input id="search" type="text" placeholder="Search apps" autocomplete="off" spellcheck="false">

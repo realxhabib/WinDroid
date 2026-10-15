@@ -40,6 +40,31 @@ def booted() -> bool:
         return False
 
 
+def parse_user_locked(ce_available: str, user_state: str) -> bool | None:
+    """ce_available: `getprop sys.user.0.ce_available`; user_state: `am get-started-user-state 0`."""
+    if ce_available.strip() == "true":
+        return False
+    state = user_state.strip()
+    if state.startswith("RUNNING_UNLOCKED"):
+        return False
+    if state.startswith(("RUNNING_LOCKED", "RUNNING_UNLOCKING", "BOOTING")):
+        return True
+    return None
+
+
+def user_locked() -> bool | None:
+    """True while Android's user is locked: a screen-lock PIN is set and hasn't been entered since boot
+    ("direct boot"). Its apps' data stays encrypted until then, and only a few system apps can run.
+    None if we couldn't tell."""
+    try:
+        ce_available = shell("getprop sys.user.0.ce_available", timeout=5)
+        if ce_available.strip() == "true":
+            return False
+        return parse_user_locked(ce_available, shell("am get-started-user-state 0", timeout=15))
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+
 def start_server() -> None:
     try:
         run("start-server", serial=False, timeout=20)

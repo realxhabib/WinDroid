@@ -3,8 +3,9 @@
 const $ = (id) => document.getElementById(id);
 const api = () => window.pywebview && window.pywebview.api;
 
-const state = { apps: [], vm: { state: "off", detail: "" }, setup: { installed: true }, query: "", sel: 0 };
-const STATUS = { off: "Off", starting: "Starting", running: "Running", stopping: "Stopping" };
+const state = { apps: [], vm: { state: "off", detail: "" }, setup: { installed: true }, checks: [], query: "", sel: 0 };
+const dismissed = new Set(); // warnings put away for this session; problems that stop Android stay
+const STATUS = { off: "Off", starting: "Starting", running: "Running", stopping: "Stopping", locked: "Locked" };
 
 // ------------------------------------------------------------ rendering
 function filtered() {
@@ -58,8 +59,9 @@ function renderStatus() {
   pill.querySelector("b").textContent = STATUS[state.vm.state] || state.vm.state;
   pill.title = state.vm.detail || "";
   const power = $("power");
-  power.classList.toggle("on", state.vm.state === "running");
-  power.title = state.vm.state === "running" ? "Shut down Android" : "Start Android";
+  const up = state.vm.state === "running" || state.vm.state === "locked";
+  power.classList.toggle("on", up);
+  power.title = up ? "Shut down Android" : "Start Android";
   power.disabled = state.vm.state === "starting" || state.vm.state === "stopping";
 }
 
@@ -77,6 +79,86 @@ function renderSetup() {
   $("setup-error").textContent = s.error || "";
 }
 
+// Problems with this PC (see checks.py): what's wrong, why it matters, and a button to fix it.
+let lastNotices = "";
+function renderNotices() {
+  const items = (state.checks || []).filter((c) => c.level === "blocking" || !dismissed.has(c.id));
+  const key = JSON.stringify(items);
+  $("setup-go").disabled = items.some((c) => c.id === "disk" && c.level === "blocking");
+  if (key === lastNotices) return;
+  lastNotices = key;
+  for (const box of [$("notices"), $("setup-notices")]) {
+    box.innerHTML = "";
+    for (const c of items) {
+      const el = document.createElement("div");
+      el.className = "notice " + c.level;
+      el.innerHTML = `<span class="glyph">${c.level === "blocking" ? "\uE7BA" : "\uE946"}</span>
+        <div class="notice-text"><b></b><p></p><div class="notice-actions"></div></div>`;
+      el.querySelector("b").textContent = c.title;
+      el.querySelector("p").textContent = c.detail;
+      const actions = el.querySelector(".notice-actions");
+      if (c.fix) {
+        const fix = document.createElement("button");
+        fix.className = "ghost";
+        fix.textContent = c.fix_label;
+        fix.addEventListener("click", () => api().fix(c.id));
+        actions.appendChild(fix);
+      }
+      if (c.level === "blocking") {
+        const again = document.createElement("button");
+        again.className = "ghost quiet";
+        again.textContent = "Check again";
+        again.addEventListener("click", () => api().recheck());
+        actions.appendChild(again);
+      } else {
+        const close = document.createElement("button");
+        close.className = "icon-btn dismiss";
+        close.title = "Dismiss";
+        close.innerHTML = '<span class="glyph">\uE711</span>';
+        close.addEventListener("click", () => { dismissed.add(c.id); renderNotices(); });
+        el.appendChild(close);
+      }
+      box.appendChild(el);
+    }
+  }
+}
+
+// Android boots locked when a screen-lock PIN is set in it: ask for the PIN here.
+let wasLocked = false;
+function renderUnlock() {
+  const locked = state.vm.state === "locked" && !!state.setup.installed;
+  $("unlock").hidden = !locked;
+  if (locked && !wasLocked) {
+    $("pin").value = "";
+    $("unlock-error").hidden = true;
+    setTimeout(() => $("pin").focus(), 60);
+  }
+  wasLocked = locked;
+}
+
+$("unlock").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const pin = $("pin").value;
+  if (!pin) { $("pin").focus(); return; }
+  const go = $("unlock-go");
+  go.disabled = true;
+  go.textContent = "Unlocking...";
+  try {
+    const message = await api().unlock(pin);
+    $("pin").value = "";
+    $("unlock-error").textContent = message || "";
+    $("unlock-error").hidden = !message;
+    if (message) {
+      const card = $("unlock");
+      card.classList.remove("shake"); void card.offsetWidth; card.classList.add("shake");
+      $("pin").focus();
+    }
+  } finally {
+    go.disabled = false;
+    go.textContent = "Unlock";
+  }
+});
+
 // Called from Python with the latest state.
 window.ui = {
   update(patch) {
@@ -85,6 +167,8 @@ window.ui = {
     if (patch.play) $("play-icon").src = patch.play;
     renderStatus();
     renderSetup();
+    renderNotices();
+    renderUnlock();
     renderGrid();
   },
   toast,
@@ -147,9 +231,10 @@ document.addEventListener("keydown", (e) => {
     else api().hide();
     return;
   }
-  // Type anywhere to search, like the Start menu.
-  if (document.activeElement !== input && e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey && $("setup").hidden) {
-    input.focus();
+  // Type anywhere to search, like the Start menu (or, while Android is locked, to enter the PIN).
+  if (!(document.activeElement instanceof HTMLInputElement) && e.key.length === 1 && !e.ctrlKey && !e.altKey
+      && !e.metaKey && $("setup").hidden) {
+    ($("unlock").hidden ? input : $("pin")).focus();
   }
 });
 document.addEventListener("click", (e) => { if (!$("menu").contains(e.target)) hideMenu(); });

@@ -4,20 +4,29 @@ every app gets a virtual display of its own (see appwindow.py).
 Android always boots fresh (about half a minute) and is powered off cleanly, so its storage is always
 consistent. Quick-boot snapshots would start faster, but restoring them headless proved unreliable
 (hangs, or silently falling back to a cold boot), so they're off.
+
+If the emulator dies under us, refresh() notices and the next ensure_running() boots a fresh one; app
+windows call it when they reconnect, so a crash heals itself.
+
+If a screen-lock PIN is set in Android, it boots LOCKED: until the PIN is entered (unlock()), apps' data
+stays encrypted and only a few system apps can start. App windows wait for the unlock.
 """
 from __future__ import annotations
 
+import shlex
 import shutil
 import subprocess
 import threading
 import time
 from typing import Callable
 
-from . import adb
+from . import adb, checks
 from .log import log
 from .paths import AVD_HOME, AVD_NAME, EMULATOR_EXE, EMULATOR_PORT, LOGS, android_env
 
-OFF, STARTING, RUNNING, STOPPING = "off", "starting", "running", "stopping"
+OFF, STARTING, RUNNING, STOPPING, LOCKED = "off", "starting", "running", "stopping", "locked"
+LOCKED_DETAIL = "Android is locked. Enter your PIN to unlock it."
+BOOT_TIMEOUT = 15 * 60  # the very first boot sets Android up and takes a few minutes
 
 # Applied on every boot (cheap and idempotent), so a reset device still behaves like a desktop.
 DESKTOP_TWEAKS = "; ".join([
@@ -39,8 +48,10 @@ class VM:
     def __init__(self) -> None:
         self.state = OFF
         self.detail = ""
+        self.keep_running = False  # True from ensure_running() until stop(): an exit is then a crash
         self.listeners: list[Callable[[str, str], None]] = []
         self._lock = threading.Lock()
+        self._unlocking = threading.Lock()
         self._ready = threading.Event()
         self._proc: subprocess.Popen | None = None
 
@@ -58,25 +69,60 @@ class VM:
                 pass
 
     def refresh(self) -> str:
-        """Pick up a VM left running by an earlier session."""
+        """Pick up a VM left running by an earlier session, notice one that died under us, and one that
+        was unlocked some other way (e.g. in the emulator's own window)."""
         if self.state == OFF and adb.online() and adb.booted():
+            if adb.user_locked():
+                self._set(LOCKED, LOCKED_DETAIL)
+            else:
+                self._set(RUNNING)
+        elif self.state in (RUNNING, LOCKED) and self._died():
+            log("vm: Android stopped unexpectedly")
+            self._set(OFF, "Android stopped unexpectedly.")
+        elif self.state == LOCKED and adb.user_locked() is False:
+            log("vm: Android was unlocked")
             self._set(RUNNING)
         return self.state
 
+    def _died(self) -> bool:
+        if self._proc is not None and self._proc.poll() is not None:
+            return True
+        if adb.online():
+            return False
+        time.sleep(2)  # not just an adb hiccup?
+        return not adb.online()
+
     # ------------------------------------------------------------------ start / stop
-    def ensure_running(self, timeout: float = 300) -> bool:
-        """Start the VM if needed and block until Android has booted."""
+    def ensure_running(self, timeout: float = 300, wait_for_unlock: bool = True) -> bool:
+        """Start the VM if needed and block until Android has booted and is unlocked. False if it couldn't
+        start. While it's locked, the timeout is on hold: we're waiting for the user, not for Android."""
         with self._lock:
-            if self.refresh() in (OFF, STOPPING):
+            self.keep_running = True
+            if self.refresh() == OFF:
+                self._set(STARTING, "Starting Android...")
                 threading.Thread(target=self._boot, daemon=True, name="vm-boot").start()
-        return self._ready.wait(timeout)
+        end = time.monotonic() + timeout
+        while not self._ready.wait(0.5):
+            if self.state == LOCKED:
+                if not wait_for_unlock:
+                    return False
+                end = time.monotonic() + timeout
+            if self.state == OFF or time.monotonic() > end:
+                return False  # the boot gave up (its reason is in self.detail)
+        return True
 
     def _boot(self) -> None:
-        self._set(STARTING, "Starting Android...")
+        problem = checks.blocking()
+        if problem:  # e.g. Windows Hypervisor Platform is off: say so instead of failing vaguely
+            log(f"vm: can't start: {problem.title}")
+            self._set(OFF, problem.title)
+            return
         adb.start_server()
         if adb.online() and not self._answers_within(15):
             self._kill_stale()
         if not adb.online():
+            if self._proc and self._proc.poll() is None:  # ours, but adb lost it: start over
+                self._proc.kill()
             shutil.rmtree(AVD_HOME / f"{AVD_NAME}.avd" / "snapshots", ignore_errors=True)
             LOGS.mkdir(parents=True, exist_ok=True)
             out = (LOGS / "emulator.log").open("w", encoding="utf-8", errors="replace")
@@ -91,15 +137,60 @@ class VM:
         started = time.monotonic()
         while not adb.booted():
             if self._proc and self._proc.poll() is not None:
-                self._set(OFF, "Android stopped unexpectedly. See emulator.log.")
+                log(f"vm: the emulator exited while starting (code {self._proc.returncode})")
+                self._proc = None
+                accel = checks.hypervisor()
+                self._set(OFF, accel.title if accel.level == checks.BLOCKING else
+                          "Android stopped unexpectedly. See emulator.log.")
                 return
             waited = time.monotonic() - started
+            if waited > BOOT_TIMEOUT:
+                log("vm: Android didn't finish starting, giving up")
+                self._power_off()
+                self._set(OFF, "Android didn't finish starting. Try again, or see emulator.log.")
+                return
             # About half a minute; the very first boot sets Android up and takes a couple of minutes.
             self._set(STARTING, "Starting Android..." if waited < 45 else "Starting Android (the first start takes a few minutes)...")
             time.sleep(1)
         adb.shell(DESKTOP_TWEAKS, timeout=30)
+        if adb.user_locked():
+            log(f"vm: Android started after {time.monotonic() - started:.0f}s, locked (a screen-lock PIN is set)")
+            self._set(LOCKED, LOCKED_DETAIL)
+            return
         log(f"vm: Android ready after {time.monotonic() - started:.0f}s")
         self._set(RUNNING)
+
+    def unlock(self, pin: str) -> str:
+        """Unlock Android with its screen-lock PIN or password, as on a phone after a restart. Returns ""
+        once unlocked, otherwise what to tell the user. Wrong tries count towards Android's own lockout.
+        The PIN never goes into a log (Android's error message repeats it, so that isn't logged either)."""
+        if self.state != LOCKED:
+            return ""
+        if not pin or len(pin) > 64 or any(ord(c) < 32 for c in pin):
+            return "Enter the PIN or password you use to unlock Android."
+        with self._unlocking:
+            try:
+                out = adb.shell("locksettings verify --old " + shlex.quote(pin), timeout=30)
+            except subprocess.TimeoutExpired:
+                return "Android didn't answer. Try again."
+            if "verified successfully" not in out:
+                if "throttled" in out.lower():
+                    log("vm: unlock: too many wrong tries, Android asks to wait")
+                    return "Too many wrong tries. Wait 30 seconds, then try again."
+                log("vm: unlock: wrong PIN")
+                return "That's not the right PIN. Try again."
+            log("vm: PIN accepted, unlocking")
+            for _ in range(60):  # Android unlocks the user's storage in the background
+                if adb.user_locked() is False:
+                    break
+                time.sleep(0.25)
+            else:
+                log("vm: still locked after the PIN was accepted")
+                return "Android accepted the PIN but is still unlocking. Try again in a moment."
+            adb.shell("input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard", timeout=15)
+            log("vm: unlocked")
+            self._set(RUNNING)
+            return ""
 
     @staticmethod
     def _answers_within(seconds: float) -> bool:
@@ -141,6 +232,7 @@ class VM:
         """Power Android off the way a phone does, so everything is written to its storage. Close app
         windows first. Falls back to pulling the plug if Android doesn't respond."""
         with self._lock:
+            self.keep_running = False
             if not adb.online():
                 self._set(OFF)
                 return

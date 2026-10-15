@@ -12,6 +12,7 @@ import queue
 import re
 import threading
 import time
+import traceback
 from pathlib import Path
 from typing import Callable
 
@@ -20,10 +21,11 @@ import win32con
 import win32gui
 
 from . import adb, winapi
-from .appwindow import AppWindow
+from .appwindow import FAILED, RUNNING as WINDOW_RUNNING, AppWindow
 from .log import log
 from .catalog import Catalog
-from .vm import RUNNING, VM
+from .protected import SecureScreens
+from .vm import LOCKED, RUNNING, VM
 
 AGENT_CLASS = "AndroidDesktop.Agent"
 APP_CLASS = "AndroidDesktop.AppWindow"
@@ -31,6 +33,13 @@ WM_APP_CALL = win32con.WM_APP + 20
 WM_APP_TRAY = win32con.WM_APP + 21
 TRAY_OPEN, TRAY_STOP, TRAY_QUIT = 1001, 1002, 1003
 APP_ICON = Path(__file__).with_name("assets") / "icon.ico"
+
+
+def live_displays(stack_list: str) -> set[int] | None:
+    """The displays that have an app on them, from `cmd activity stack list`. None if that wasn't a real
+    answer (adb error, Android going down): Android's home screen always sits on display 0."""
+    displays = {int(x) for x in re.findall(r"displayId=(\d+)", stack_list)}
+    return displays if 0 in displays else None
 
 
 class COPYDATASTRUCT(ctypes.Structure):
@@ -51,8 +60,11 @@ def send_to_agent(request: dict) -> bool:
 
 
 class WindowManager:
-    def __init__(self, vm: VM, catalog: Catalog) -> None:
+    def __init__(self, vm: VM, catalog: Catalog, ipc: bool = True) -> None:
+        """ipc=False: a test harness's manager. It takes no requests from other processes and has no tray
+        icon, so it never competes with a running agent."""
         self.vm = vm
+        self.ipc = ipc
         self.catalog = catalog
         self.windows: dict[str, AppWindow] = {}
         self.by_hwnd: dict[int, AppWindow] = {}
@@ -62,17 +74,21 @@ class WindowManager:
         self.on_request: Callable[[dict], None] = lambda r: None
         self.accepting = True  # False once the agent starts quitting
         self.on_tray: Callable[[int], None] = lambda cmd: None
+        self.on_notice: Callable[[str], None] = lambda text: log(text)  # something the user should hear about
+        self.on_unlock: Callable[[], None] = lambda: None  # a window's "Unlock" button
         self.listeners: list[Callable[[], None]] = []
         self._calls: queue.Queue = queue.Queue()
         self._ready = threading.Event()
         self._empty = threading.Event()
         self._empty.set()
+        self._reported: set[tuple[int, str]] = set()
 
     # ------------------------------------------------------------------ thread plumbing
     def start(self) -> None:
         threading.Thread(target=self._run, daemon=True, name="windows").start()
         self._ready.wait()
         threading.Thread(target=self._watch_tasks, daemon=True, name="task-watch").start()
+        SecureScreens(self).start()
 
     def call(self, fn: Callable[[], None]) -> None:
         """Run fn on the GUI thread."""
@@ -89,13 +105,14 @@ class WindowManager:
         app.lpfnWndProc = self._app_proc
         win32gui.RegisterClass(app)
         agent = win32gui.WNDCLASS()
-        agent.lpszClassName = AGENT_CLASS
+        agent.lpszClassName = AGENT_CLASS if self.ipc else AGENT_CLASS + ".Harness"
         agent.hInstance = hinst
         agent.lpfnWndProc = self._agent_proc
         win32gui.RegisterClass(agent)
-        self.agent_hwnd = win32gui.CreateWindowEx(0, AGENT_CLASS, "Android Desktop", win32con.WS_POPUP,
+        self.agent_hwnd = win32gui.CreateWindowEx(0, agent.lpszClassName, "Android Desktop", win32con.WS_POPUP,
                                                   0, 0, 0, 0, 0, 0, hinst, None)
-        self._add_tray()
+        if self.ipc:
+            self._add_tray()
         self._ready.set()
         win32gui.PumpMessages()
 
@@ -106,15 +123,22 @@ class WindowManager:
             win.hwnd = hwnd
         if win is None:
             return win32gui.DefWindowProc(hwnd, msg, wp, lp)
-        return win.wndproc(hwnd, msg, wp, lp)
+        try:
+            return win.wndproc(hwnd, msg, wp, lp)
+        except Exception as e:
+            # Under pythonw nobody would see this. Log each kind once: WM_PAINT would repeat it 30x a second.
+            if (msg, type(e).__name__) not in self._reported:
+                self._reported.add((msg, type(e).__name__))
+                log(f"{win.app.package}: message {msg:#06x} failed:\n{traceback.format_exc().rstrip()}")
+            return win32gui.DefWindowProc(hwnd, msg, wp, lp)
 
     def _agent_proc(self, hwnd: int, msg: int, wp: int, lp: int) -> int:
         if msg == WM_APP_CALL:
             while not self._calls.empty():
                 try:
                     self._calls.get_nowait()()
-                except Exception as e:
-                    log(f"window thread: {e!r}")
+                except Exception:
+                    log(f"window thread:\n{traceback.format_exc().rstrip()}")
             return 0
         if msg == win32con.WM_COPYDATA:
             if not self.accepting:
@@ -144,6 +168,18 @@ class WindowManager:
         flags = win32gui.NIF_ICON | win32gui.NIF_MESSAGE | win32gui.NIF_TIP
         win32gui.Shell_NotifyIcon(win32gui.NIM_ADD, (self.agent_hwnd, 1, flags, WM_APP_TRAY, icon, "Android Desktop"))
 
+    def balloon(self, text: str, title: str = "Android Desktop") -> None:
+        """A Windows notification from the tray icon, for when the launcher isn't open."""
+        if not self.ipc:
+            return
+
+        def show() -> None:
+            icon = winapi.load_icon(APP_ICON, 32) if APP_ICON.exists() else 0
+            win32gui.Shell_NotifyIcon(win32gui.NIM_MODIFY, (self.agent_hwnd, 1, win32gui.NIF_INFO, WM_APP_TRAY,
+                                                            icon, "Android Desktop", text[:255], 10, title[:63],
+                                                            win32gui.NIIF_INFO))
+        self.call(show)
+
     def remove_tray(self) -> None:
         try:
             win32gui.Shell_NotifyIcon(win32gui.NIM_DELETE, (self.agent_hwnd, 1))
@@ -154,7 +190,7 @@ class WindowManager:
         menu = win32gui.CreatePopupMenu()
         win32gui.AppendMenu(menu, win32con.MF_STRING, TRAY_OPEN, "Open Android Desktop")
         win32gui.AppendMenu(menu, win32con.MF_SEPARATOR, 0, "")
-        flags = win32con.MF_STRING | (0 if self.vm.state == RUNNING else win32con.MF_GRAYED)
+        flags = win32con.MF_STRING | (0 if self.vm.state in (RUNNING, LOCKED) else win32con.MF_GRAYED)
         win32gui.AppendMenu(menu, flags, TRAY_STOP, "Shut down Android")
         win32gui.AppendMenu(menu, win32con.MF_STRING, TRAY_QUIT, "Quit")
         x, y = win32gui.GetCursorPos()
@@ -172,11 +208,14 @@ class WindowManager:
         if package in self.windows and not self.windows[package].closing:
             win = self.windows[package]
             win.focus()
+            if win.status == FAILED:
+                win.retry()
             if intent:
                 win.run_intent(intent)
             return
         app = self.catalog.get(package)
         if app is None:
+            self.on_notice(f"Couldn't open {package}: it isn't in Android's app list.")
             return
         win = AppWindow(self, app, intent)
         self.windows[package] = win
@@ -214,16 +253,22 @@ class WindowManager:
         misses: dict[int, int] = {}
         while True:
             time.sleep(1.5)
-            wins = [w for w in list(self.windows.values()) if w.child and w.display_id is not None and not w.closing]
+            # Only windows showing their app: one that's (re)connecting has no display to judge yet.
+            wins = [w for w in list(self.windows.values())
+                    if w.status == WINDOW_RUNNING and w.child and w.display_id is not None and not w.closing]
+            misses = {d: n for d, n in misses.items() if d in {w.display_id for w in wins}}
             if not wins or self.vm.state != RUNNING:
                 continue
             try:
-                out = adb.shell("cmd activity stack list", timeout=10)
+                live = live_displays(adb.shell("cmd activity stack list", timeout=10))
             except Exception:
                 continue
-            live = {int(x) for x in re.findall(r"displayId=(\d+)", out)}
+            if live is None:
+                continue  # no verdict this round, rather than "every app exited"
             for w in wins:
-                if w.display_id in live or time.monotonic() - w.opened_at < 8:
+                # While a secure screen is up, the app lives on protected.py's display instead.
+                here = w.protected.display if w.protected and w.protected.display is not None else w.display_id
+                if here in live or time.monotonic() - w.opened_at < 8:
                     misses[w.display_id] = 0
                     continue
                 misses[w.display_id] = misses.get(w.display_id, 0) + 1

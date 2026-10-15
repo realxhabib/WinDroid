@@ -5,6 +5,7 @@
     pythonw -m androiddesktop stop             # close every app and shut Android down
     pythonw -m androiddesktop quit             # ...and exit Android Desktop entirely
     python  -m androiddesktop setup            # download and install the Android runtime (console)
+    python  -m androiddesktop doctor           # check whether this PC can run Android
 
 One agent process owns everything: the VM, the app windows, the tray icon and the launcher. Later
 invocations hand their request to it and exit.
@@ -19,6 +20,7 @@ import os
 import sys
 import threading
 import time
+from dataclasses import asdict
 from pathlib import Path
 
 from . import winapi
@@ -30,12 +32,12 @@ import win32api  # noqa: E402
 import win32con  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from . import adb, runtime, shortcuts  # noqa: E402
+from . import adb, checks, runtime, shortcuts  # noqa: E402
 from .catalog import Catalog  # noqa: E402
-from .log import log  # noqa: E402
+from .log import log, log_uncaught  # noqa: E402
 from .manager import TRAY_OPEN, TRAY_QUIT, TRAY_STOP, WindowManager, send_to_agent  # noqa: E402
 from .paths import DATA  # noqa: E402
-from .vm import OFF, RUNNING, VM  # noqa: E402
+from .vm import LOCKED, OFF, RUNNING, VM  # noqa: E402
 
 UI = Path(__file__).with_name("ui") / "index.html"
 IDLE_SHUTDOWN_MINUTES = 10
@@ -85,6 +87,16 @@ class Api:
     def uninstall(self, package: str) -> None:
         self._agent.uninstall(package)
 
+    def fix(self, check_id: str) -> None:
+        self._agent.fix(check_id)
+
+    def recheck(self) -> None:
+        self._agent.recheck()
+
+    def unlock(self, pin: str) -> str:
+        """"" once Android is unlocked, otherwise what to show under the PIN field."""
+        return self._agent.unlock(pin)
+
     def search_play(self, query: str) -> None:
         q = "".join(c for c in query if c.isalnum() or c in " -_.")
         self._agent.open("com.android.vending", ["-a", "android.intent.action.VIEW", "-d", f"market://search?q={q}"])
@@ -101,14 +113,21 @@ class Agent:
         self.visible = show_launcher
         self.quitting = False
         self.setup_state = {"installed": runtime.installed(), "busy": False, "progress": 0, "message": "", "error": ""}
+        self.checks: list[checks.Check] = []
+        self._restart_pending = False  # Windows Hypervisor Platform turned on, waiting for a restart
+        self._vm_state = OFF
+        self._after_unlock: list[str] = []  # apps asked for while Android was locked
         self._icon_cache: dict[str, tuple[float, str]] = {}
         self._idle_since = time.monotonic()
 
     # ------------------------------------------------------------------ startup
     def run(self, first_request: dict) -> None:
+        log_uncaught()
         log(f"agent started (pid {os.getpid()})")
         self.manager.on_request = self.handle
         self.manager.on_tray = self.tray
+        self.manager.on_notice = self.notice
+        self.manager.on_unlock = self.show_launcher  # the launcher asks for the PIN
         self.manager.start()
         self.vm.listeners.append(lambda s, d: self._on_vm(s))
         self.catalog.listeners.append(lambda: self.push(apps=True))
@@ -125,6 +144,7 @@ class Agent:
         os._exit(0)
 
     def _background(self, first_request: dict) -> None:
+        self.recheck()
         if self.setup_state["installed"]:
             try:
                 shortcuts.ensure_launcher_shortcut()
@@ -193,15 +213,25 @@ class Agent:
         if not self.setup_state["installed"]:
             self.show_launcher()
             return
+        if self.catalog.get(package) is None and self.vm.state == LOCKED:
+            # Locked Android only lists a few system apps: open it once the PIN is in.
+            self._after_unlock.append(package)
+            self.show_launcher()
+            return
         if self.catalog.get(package) is None:
             self._refresh_catalog()
         if self.catalog.get(package) is None:
-            self.toast("That app isn't installed in Android.")
+            self.notice(f"Couldn't open {package}: it isn't installed in Android.")
             return
         self.manager.open(package, intent)
 
+    def unlock(self, pin: str) -> str:
+        message = self.vm.unlock(pin)
+        self.push(apps=False)
+        return message
+
     def power(self) -> None:
-        if self.vm.state == RUNNING:
+        if self.vm.state in (RUNNING, LOCKED):
             self.shutdown()
         elif self.vm.state == OFF:
             threading.Thread(target=self.vm.ensure_running, daemon=True).start()
@@ -258,7 +288,8 @@ class Agent:
 
     def snapshot(self, apps: bool = True) -> dict:
         out: dict = {"vm": {"state": self.vm.state, "detail": self.vm.detail}, "setup": dict(self.setup_state),
-                     "theme": "light" if winapi.light_theme() else "dark"}
+                     "theme": "light" if winapi.light_theme() else "dark",
+                     "checks": [asdict(c) for c in self.checks if c.level != checks.OK]}
         if apps:
             running = set(self.manager.running())
             out["apps"] = [{"pkg": a.package, "label": a.label, "system": a.system, "icon": self._icon_uri(a.icon),
@@ -277,6 +308,14 @@ class Agent:
         except Exception as e:
             log(f"push: {e!r}")
 
+    def notice(self, text: str) -> None:
+        """Tell the user something went wrong: in the launcher if it's open, else as a Windows notification."""
+        log(f"notice: {text}")
+        if self.visible and self.loaded:
+            self.toast(text)
+        else:
+            self.manager.balloon(text)
+
     def toast(self, text: str) -> None:
         if self.window and self.loaded:
             try:
@@ -285,9 +324,18 @@ class Agent:
                 pass
 
     def _on_vm(self, vm_state: str) -> None:
+        changed, self._vm_state = vm_state != self._vm_state, vm_state
         self.push(apps=False)
+        if changed and vm_state in (OFF, RUNNING):  # a failed boot may have a reason worth showing
+            threading.Thread(target=self.recheck, daemon=True).start()
         if vm_state == RUNNING:
-            threading.Thread(target=self._refresh_catalog, daemon=True).start()
+            threading.Thread(target=self._now_running, daemon=True).start()
+
+    def _now_running(self) -> None:
+        self._refresh_catalog()
+        pending, self._after_unlock = self._after_unlock, []
+        for package in dict.fromkeys(pending):
+            self.open(package)
 
     def _refresh_catalog(self) -> None:
         if self.vm.state != RUNNING:
@@ -297,6 +345,45 @@ class Agent:
                 self.push(apps=True)
         except Exception as e:
             log(f"catalog refresh: {e!r}")
+
+    # ------------------------------------------------------------------ PC checks
+    def recheck(self) -> list[checks.Check]:
+        """Re-run the PC checks (well under a second) and show any problems in the launcher."""
+        try:
+            found = checks.run(self.setup_state["installed"], self.vm.state == RUNNING)
+        except Exception as e:
+            log(f"checks: {e!r}")
+            found = []
+        if self._restart_pending:
+            found = [checks.Check("hypervisor", checks.BLOCKING, "Restart your PC to finish",
+                                  "Windows Hypervisor Platform is turned on. It starts working after a restart.")
+                     if c.id == "hypervisor" and c.level == checks.BLOCKING else c for c in found]
+        for c in found:
+            if c.level != checks.OK and all(c.title != old.title for old in self.checks):
+                log(f"check: {c.level}: {c.title}")
+        self.checks = found
+        self.push()
+        return found
+
+    def fix(self, check_id: str) -> None:
+        check = next((c for c in self.checks if c.id == check_id and c.fix), None)
+        if check is None:
+            return
+        if check.fix == "open_storage":
+            checks.open_storage_settings()
+        elif check.fix == "enable_hypervisor":
+            try:
+                ok = checks.enable_hypervisor()
+            except Exception as e:  # most likely "no" to Windows' admin prompt
+                log(f"enable hypervisor: {e!r}")
+                self.toast("Windows Hypervisor Platform wasn't turned on")
+                return
+            log(f"enable hypervisor: {'done, restart pending' if ok else 'failed'}")
+            if ok:
+                self._restart_pending = True
+            else:
+                self.toast("Windows couldn't turn it on. Try \"Turn Windows features on or off\".")
+        self.recheck()
 
     # ------------------------------------------------------------------ setup & app management
     def setup(self) -> None:
@@ -311,6 +398,9 @@ class Agent:
                 self.push(apps=False)
 
         def work() -> None:
+            # Not enough disk stops setup; a missing Windows feature doesn't (it can be turned on meanwhile).
+            if any(c.id == "disk" and c.level == checks.BLOCKING for c in self.recheck()):
+                return
             self.setup_state.update(busy=True, error="", progress=0, message="Preparing...")
             self.push()
             try:
@@ -330,6 +420,9 @@ class Agent:
         paths = self.window.create_file_dialog(webview.OPEN_DIALOG, allow_multiple=True,
                                                file_types=("Android apps (*.apk)", "All files (*.*)"))
         if not paths:
+            return
+        if self.vm.state == LOCKED:
+            self.toast("Unlock Android first")
             return
         if not self.vm.ensure_running():
             self.toast("Android isn't running")
@@ -367,6 +460,8 @@ class Agent:
         last_refresh = time.monotonic()
         while not self.quitting:
             time.sleep(5)
+            if self.vm.state in (RUNNING, LOCKED):
+                self.vm.refresh()  # notices an emulator that died (or was unlocked in its own window)
             busy = bool(self.manager.windows) or self.visible
             if busy:
                 self._idle_since = time.monotonic()
@@ -376,7 +471,7 @@ class Agent:
             idle = time.monotonic() - self._idle_since
             if not busy and self.vm.state == OFF and not self.setup_state["busy"]:
                 self.quit()  # nothing open and Android is off: nothing left for us to do
-            if not busy and self.vm.state == RUNNING and idle > IDLE_SHUTDOWN_MINUTES * 60:
+            if not busy and self.vm.state in (RUNNING, LOCKED) and idle > IDLE_SHUTDOWN_MINUTES * 60:
                 log("idle: shutting Android down")
                 self.quit()
 
@@ -387,6 +482,16 @@ def main() -> None:
     if command == "setup":
         runtime.install(lambda m, f: print(f"\r{m:<70} {f * 100:5.1f}%", end="", flush=True))
         print()
+        return
+    if command == "doctor":
+        installed = runtime.installed()
+        running = installed and adb.online() and adb.booted()
+        locked = running and adb.user_locked()
+        print(f"Data folder:  {DATA}")
+        print(f"Runtime:      {'installed' if installed else 'not installed'}")
+        print(f"Android:      {'not running' if not running else 'running'}"
+              f"{', LOCKED: enter your PIN in the launcher to unlock it' if locked else ''}")
+        print(checks.report(installed, running))
         return
     if command == "open" and len(args) > 1:
         request = {"open": args[1]}

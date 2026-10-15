@@ -46,6 +46,19 @@ class App:
         return path
 
 
+def parse_list(output: str) -> dict[str, App]:
+    """The helper's `list` output: one app per line, "package, activity, system (1/0), last update, label"
+    separated by tabs."""
+    apps: dict[str, App] = {}
+    for line in output.splitlines():
+        parts = line.rstrip("\r").split("\t")
+        if len(parts) < 5 or parts[0] in HIDDEN:
+            continue
+        pkg, activity, system, updated, label = parts[0], parts[1], parts[2] == "1", int(parts[3] or 0), parts[4]
+        apps[pkg] = App(pkg, activity, label, system, updated)
+    return apps
+
+
 class Catalog:
     def __init__(self) -> None:
         self.apps: dict[str, App] = {}
@@ -77,14 +90,12 @@ class Catalog:
     def refresh(self) -> bool:
         """Re-read the app list; render icons only for new or updated apps. Returns True if anything changed."""
         with self._lock:
+            if adb.user_locked() is not False:
+                # Locked (or can't tell): Android only lists its few "direct boot" apps until the PIN is
+                # entered. Don't mistake that for the user's apps being gone.
+                return False
             adb.run("push", str(HELPER), DEVICE_HELPER, timeout=30)
-            fresh: dict[str, App] = {}
-            for line in self._helper("list").splitlines():
-                parts = line.rstrip("\r").split("\t")
-                if len(parts) < 5 or parts[0] in HIDDEN:
-                    continue
-                pkg, activity, system, updated, label = parts[0], parts[1], parts[2] == "1", int(parts[3] or 0), parts[4]
-                fresh[pkg] = App(pkg, activity, label, system, updated)
+            fresh = parse_list(self._helper("list"))
             if not fresh:
                 return False  # the helper failed; keep what we had
             stale = [a.package for a in fresh.values()

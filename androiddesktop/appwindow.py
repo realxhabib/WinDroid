@@ -8,6 +8,10 @@ Layouts flyout on the maximize button.
 Below the bar sits the app itself: a scrcpy window rendering an Android virtual display made just
 for this app, re-parented as a borderless child. Its "flex display" follows the window size, so
 resizing the window resizes the app, which re-lays itself out like a desktop app.
+
+If scrcpy goes away without being asked to (it crashed, or Android itself did), the window doesn't
+vanish: it shows "Reconnecting..." and starts the app again on a fresh display, booting Android again
+if needed. If that keeps failing it says so and offers "Try again".
 """
 from __future__ import annotations
 
@@ -35,6 +39,7 @@ from .runtime import SCRCPY_EXE
 
 if TYPE_CHECKING:
     from .manager import WindowManager
+    from .protected import Protected
 
 WM_APP_EMBED = win32con.WM_APP + 1  # lparam: the scrcpy window
 WM_APP_EXITED = win32con.WM_APP + 2
@@ -44,7 +49,11 @@ WM_NCMOUSELEAVE = 0x02A2
 WM_MOUSELEAVE = 0x02A3
 HTMAXBUTTON = 9
 
-TIMER_SAMPLE, TIMER_SPLASH, TIMER_FADE, TIMER_KILL = 1, 2, 3, 4
+TIMER_SAMPLE, TIMER_SPLASH, TIMER_FADE, TIMER_KILL, TIMER_RETRY = 1, 2, 3, 4, 5
+
+STARTING, RUNNING, RECONNECTING, FAILED = "starting", "running", "reconnecting", "failed"
+RETRY_DELAYS = (1, 2, 4, 8, 15)  # seconds before each reconnect attempt
+STABLE_SECS = 30  # a connection that lasted this long starts the attempt count afresh
 
 BAR_DIP = 30
 CAPTION_BTN_DIP = 46
@@ -58,6 +67,31 @@ GLYPHS = {"back": "", "pin": "", "pinned": "", "min": "", "max": "�
 TOOLTIPS = {"back": "Back", "pin": "Keep on top", "min": "Minimize", "max": "Maximize", "close": "Close"}
 CLOSE_RED = (196, 43, 28)
 _LAUNCH_LOCK = threading.Lock()
+
+
+def scrcpy_args(package: str, size: tuple[int, int], density: int, pos: tuple[int, int],
+                bg: tuple[int, int, int]) -> list[str]:
+    """scrcpy's command line: one app on a virtual display of its own, its window at a screen position."""
+    (w, h), (x, y) = size, pos
+    return [str(SCRCPY_EXE), "-s", SERIAL, f"--new-display={w}x{h}/{density}", "--flex-display",
+            f"--start-app={package}", "--no-vd-system-decorations", "--keep-active",
+            "--no-audio",  # the emulator already plays Android's sound on the PC
+            "--window-borderless", f"--window-title=androiddesktop:{package}",
+            f"--window-x={x}", f"--window-y={y}",  # size comes from --new-display
+            "--no-window-aspect-ratio-lock",
+            # A real (virtual) hardware keyboard: Android keeps its on-screen keyboard away and
+            # shortcuts behave like on a PC.
+            "--keyboard=uhid", "--display-ime-policy=local",
+            # Right-click and the mouse's back button go Back; Shift+right-click is a real right-click.
+            "--mouse-bind=b+b+:++++",
+            "--video-codec=h264", "--video-bit-rate=12M", "--max-fps=60",
+            "--background-color=%02x%02x%02x" % bg[:3], "--no-terminal-title"]
+
+
+def parse_display_id(line: str) -> int | None:
+    """scrcpy announces the virtual display it made: "[server] INFO: New display: 396x822/160 (id=3)"."""
+    m = re.search(r"New display: .*\(id=(\d+)\)", line)
+    return int(m.group(1)) if m else None
 
 
 def mix(a: tuple, b: tuple, t: float) -> tuple[int, int, int]:
@@ -90,7 +124,15 @@ class AppWindow:
         self.active = True
         self.pinned = False
         self.closing = False
+        self.status = STARTING
         self.error = ""
+        self.protected: Protected | None = None  # a FLAG_SECURE screen, shown via protected.py
+        self._gen = 0  # one per scrcpy launch; messages from an older launch are ignored
+        self._shown = 0  # the launch whose window is embedded
+        self._handled = 0  # the last launch whose end we've dealt with
+        self._attempt = 0
+        self._embedded_at = 0.0  # when the app last appeared; 0 if it never has
+        self._splash_button: tuple[str, tuple[int, int, int, int]] | None = None  # (action, client rect)
         self.scale = 1.0
         self.opened_at = time.monotonic()
         self._phase = 0.0
@@ -116,6 +158,10 @@ class AppWindow:
         return out
 
     def _button_at(self, x: int, y: int) -> str | None:
+        if self._splash_button and not self.child:
+            name, (l, t, r, b) = self._splash_button
+            if l <= x < r and t <= y < b:
+                return name
         if y < 0 or y >= self.bar:
             return None
         for name, x0, x1 in self._buttons(self._client()[0]):
@@ -176,7 +222,7 @@ class AppWindow:
         self.focus()
         ctypes.windll.user32.SetTimer(self.hwnd, TIMER_SPLASH, 33, None)
         ctypes.windll.user32.SetTimer(self.hwnd, TIMER_SAMPLE, 350, None)
-        threading.Thread(target=self._launch, daemon=True, name=f"launch-{self.app.package}").start()
+        self._start()
 
     def focus(self) -> None:
         if win32gui.IsIconic(self.hwnd):
@@ -191,7 +237,25 @@ class AppWindow:
         if self.hwnd and win32gui.IsWindow(self.hwnd):
             win32gui.PostMessage(self.hwnd, win32con.WM_CLOSE, 0, 0)
 
-    def _launch(self) -> None:
+    def _start(self) -> None:
+        """(Re)launch scrcpy for this app on a worker thread."""
+        self._gen += 1
+        self.error = ""
+        threading.Thread(target=self._launch, args=(self._gen,), daemon=True,
+                         name=f"launch-{self.app.package}").start()
+
+    def retry(self) -> None:
+        """The "Try again" button, or opening the app again from the launcher."""
+        if self.status != FAILED or self.closing:
+            return
+        self._attempt = 0
+        self.status = RECONNECTING if self._embedded_at else STARTING
+        self._splash_button = None
+        winapi.user32.SetTimer(self.hwnd, TIMER_SPLASH, 33, None)
+        win32gui.InvalidateRect(self.hwnd, None, False)
+        self._start()
+
+    def _launch(self, gen: int) -> None:
         """Worker thread: make sure Android is up, then start this app on a virtual display of its own."""
         try:
             if not self.manager.vm.ensure_running():
@@ -200,60 +264,98 @@ class AppWindow:
             w, h = cw, max(ch - self.bar, 1)
             x, y = win32gui.ClientToScreen(self.hwnd, (0, self.bar))
             density = round(160 * self.scale * float(state.get("density", 1.0)))
-            args = [str(SCRCPY_EXE), "-s", SERIAL, f"--new-display={w}x{h}/{density}", "--flex-display",
-                    f"--start-app={self.app.package}", "--no-vd-system-decorations", "--keep-active",
-                    "--no-audio",  # the emulator already plays Android's sound on the PC
-                    "--window-borderless", f"--window-title=androiddesktop:{self.app.package}",
-                    f"--window-x={x}", f"--window-y={y}",  # size comes from --new-display
-                    "--no-window-aspect-ratio-lock",
-                    # A real (virtual) hardware keyboard: Android keeps its on-screen keyboard away and
-                    # shortcuts behave like on a PC.
-                    "--keyboard=uhid", "--display-ime-policy=local",
-                    # Right-click and the mouse's back button go Back; Shift+right-click is a real right-click.
-                    "--mouse-bind=b+b+:++++",
-                    "--video-codec=h264", "--video-bit-rate=12M", "--max-fps=60",
-                    "--background-color=%02x%02x%02x" % self.bg, "--no-terminal-title"]
+            args = scrcpy_args(self.app.package, (w, h), density, (x, y), self.bg)
             (LOGS / "windows").mkdir(parents=True, exist_ok=True)
             # One at a time: every scrcpy pushes its server to the same path on the device, and
             # simultaneous starts trip over each other ("Server connection failed").
             # scrcpy opens its window before its server is up, so wait for the server's display.
             with _LAUNCH_LOCK:
-                if self.closing:
+                if self.closing or gen != self._gen:
                     return
+                self.display_id = None
                 self.proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                              env=android_env(), creationflags=adb.CREATE_NO_WINDOW, text=True,
                                              encoding="utf-8", errors="replace")
-                threading.Thread(target=self._read_output, daemon=True).start()
+                threading.Thread(target=self._read_output, args=(self.proc, gen), daemon=True).start()
                 end = time.monotonic() + 30
-                while self.display_id is None:
+                while self.display_id is None and self._shown != gen:
                     if time.monotonic() > end or self.proc.poll() is not None:
                         raise RuntimeError(self.error or "The app didn't start.")
                     time.sleep(0.03)
             while not (found := self._scrcpy_windows()):
+                if self._shown == gen:
+                    return  # the adopt timer embedded it first
                 if time.monotonic() > end or self.proc.poll() is not None:
                     raise RuntimeError(self.error or "The app window didn't appear.")
                 time.sleep(0.03)
-            win32gui.PostMessage(self.hwnd, WM_APP_EMBED, 0, found[0])
+            win32gui.PostMessage(self.hwnd, WM_APP_EMBED, gen, found[0])
         except Exception as e:
             log(f"{self.app.package}: launch failed: {e!r}")
-            self.error = str(e)
-            if self.hwnd:
-                win32gui.PostMessage(self.hwnd, WM_APP_FAILED, 0, 0)
+            if gen == self._gen:
+                self.error = str(e)
+            if self.hwnd and win32gui.IsWindow(self.hwnd):
+                win32gui.PostMessage(self.hwnd, WM_APP_FAILED, gen, 0)
 
-    def _read_output(self) -> None:
-        proc = self.proc
-        with (LOGS / "windows" / f"{self.app.package}.log").open("w", encoding="utf-8") as log:
+    def _read_output(self, proc: subprocess.Popen, gen: int) -> None:
+        # The first launch starts the log afresh; reconnects append, so the reason for a crash survives.
+        path = LOGS / "windows" / f"{self.app.package}.log"
+        with path.open("w" if gen == 1 else "a", encoding="utf-8") as out:
+            out.write(f"--- {time.strftime('%H:%M:%S')} launch {gen}\n")
             for line in proc.stdout:
-                log.write(line)
-                log.flush()
-                m = re.search(r"New display: .*\(id=(\d+)\)", line)
-                if m:
-                    self.display_id = int(m.group(1))
-                elif "ERROR" in line and not self.child:
+                out.write(line)
+                out.flush()
+                display = parse_display_id(line)
+                if display is not None and gen == self._gen:
+                    self.display_id = display
+                elif "ERROR" in line and gen == self._gen and not self.child:
                     self.error = line.split("ERROR:", 1)[-1].strip()
         proc.wait()
         if self.hwnd and win32gui.IsWindow(self.hwnd):
-            win32gui.PostMessage(self.hwnd, WM_APP_EXITED, 0, 0)
+            win32gui.PostMessage(self.hwnd, WM_APP_EXITED, gen, 0)
+
+    def _lost(self, gen: int, exited: bool) -> None:
+        """scrcpy ended or never got going. Close the window if that was wanted; otherwise reconnect."""
+        if gen != self._gen or gen <= self._handled:
+            return  # an older launch, or this one's end already handled (failure and exit both report)
+        if not exited and self._shown == gen and self.proc and self.proc.poll() is None:
+            log(f"{self.app.package}: ignoring a late launch failure; the app is showing")
+            return
+        self._handled = gen
+        if self.protected:
+            self.protected.end(remove=self.closing)
+        if self.closing:
+            win32gui.DestroyWindow(self.hwnd)
+            return
+        proc, was_running = self.proc, self.status == RUNNING
+        if proc and proc.poll() is None:
+            proc.kill()
+        self.child, self.display_id = 0, None
+        if not (self.manager.accepting and self.manager.vm.keep_running):
+            # Android was shut down on purpose, or we're quitting: nothing to come back to.
+            win32gui.DestroyWindow(self.hwnd)
+            return
+        now = time.monotonic()
+        if was_running:
+            log(f"{self.app.package}: scrcpy exited (code {proc.poll() if proc else None}) "
+                f"after {now - self._embedded_at:.0f}s; reconnecting")
+            if now - self._embedded_at > STABLE_SECS:
+                self._attempt = 0
+        if self._embedded_at and self._attempt < len(RETRY_DELAYS):  # it worked before: try again
+            delay = RETRY_DELAYS[self._attempt]
+            self._attempt += 1
+            self.status = RECONNECTING
+            winapi.user32.SetTimer(self.hwnd, TIMER_RETRY, delay * 1000, None)
+            winapi.user32.SetTimer(self.hwnd, TIMER_SPLASH, 33, None)
+        else:
+            if self._embedded_at:
+                self.error = "Couldn't reconnect to Android."
+                log(f"{self.app.package}: giving up after {self._attempt} reconnect attempts")
+            else:
+                self.error = self.error or "The app couldn't start. See the logs folder."
+            self.status = FAILED
+            winapi.user32.KillTimer(self.hwnd, TIMER_SPLASH)
+        win32gui.InvalidateRect(self.hwnd, None, False)
+        self.manager.changed()
 
     def _scrcpy_windows(self) -> list[int]:
         """scrcpy's video window(s) still floating at top level. SDL also makes short-lived helper
@@ -301,7 +403,12 @@ class AppWindow:
             log(f"{self.app.package}: re-parenting {child:#x} didn't take yet")
             return
         self.child = child
-        log(f"{self.app.package}: embedded {child:#x} (display {self.display_id})")
+        log(f"{self.app.package}: {'reconnected' if self.status == RECONNECTING else 'embedded'} "
+            f"{child:#x} (display {self.display_id})")
+        self.status = RUNNING
+        self._shown = self._gen
+        self._embedded_at = self.opened_at = time.monotonic()
+        self._splash_button = None
         self._layout(frame_changed=True)
         win32gui.ShowWindow(child, win32con.SW_SHOW)
         u.KillTimer(self.hwnd, TIMER_SPLASH)
@@ -320,11 +427,18 @@ class AppWindow:
             threading.Thread(target=adb.shell, args=(command,), daemon=True).start()
 
     def _layout(self, frame_changed: bool = False) -> None:
-        if not self.child:
-            return
+        if not self.child or not win32gui.IsWindow(self.child):
+            return  # none yet, or scrcpy just died and its window with it (the exit message follows)
         cw, ch = self._client()
         flags = win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE | (win32con.SWP_FRAMECHANGED if frame_changed else 0)
         win32gui.SetWindowPos(self.child, 0, 0, self.bar, cw, max(ch - self.bar, 1), flags)
+        if self.protected:
+            self.protected.place()
+
+    @property
+    def view(self) -> int:
+        """The window showing the app: scrcpy's, or protected.py's while a secure screen is up."""
+        return self.protected.hwnd if self.protected and self.protected.hwnd else self.child
 
     def _child_misplaced(self) -> bool:
         cw, ch = self._client()
@@ -335,12 +449,12 @@ class AppWindow:
     # ------------------------------------------------------------------ color
     def _sample(self) -> None:
         """Match the bar to the app's own top color, so window and app read as one surface."""
-        if not self.child or win32gui.IsIconic(self.hwnd):
+        if not self.child or not win32gui.IsWindow(self.child) or win32gui.IsIconic(self.hwnd):
             return
         if self._child_misplaced():  # scrcpy sized its own window once the video started
             self._layout()
         cw, _ = self._client()
-        img = winapi.capture(self.child, cw, 3)
+        img = winapi.capture(self.view, cw, 3)
         if img is None:
             return
         colors = img.crop((0, 1, cw, 2)).getcolors(cw)
@@ -434,15 +548,30 @@ class AppWindow:
                      icon.resize((px, px), Image.LANCZOS))
         d = ImageDraw.Draw(im)
         text_font = winapi.font("text", max(9, round(13 * s)))
-        if self.error:
-            message = self.error
+        button = None  # (action, label)
+        if self.status == FAILED:
+            message, button = self.error, ("retry", "Try again")
+        elif self.manager.vm.state == "locked":
+            message, button = f"Android is locked. Unlock it to open {self.app.label}.", ("unlock", "Unlock")
         elif self.manager.vm.state != "running":
             message = self.manager.vm.detail or "Starting Android..."
+        elif self.status == RECONNECTING:
+            message = "Reconnecting..."
         else:
             message = f"Opening {self.app.label}..."
         ty = cy + size // 2 + round(30 * s)
         d.text((cx, ty), message, font=text_font, fill=mix(bg, fg, 0.7), anchor="mm")
-        if not self.error:
+        if button:
+            name, label = button
+            bw = round(d.textlength(label, font=text_font) + 32 * s)
+            bh = round(32 * s)
+            bx, by = cx - bw // 2, ty + round(22 * s)
+            hot = self.hover == name
+            d.rounded_rectangle((bx, by, bx + bw, by + bh), radius=round(8 * s),
+                                fill=mix(bg, fg, 0.16 if hot else 0.1), outline=mix(bg, fg, 0.2))
+            d.text((cx, by + bh / 2), label, font=text_font, fill=fg, anchor="mm")
+            self._splash_button = (name, (bx, by + self.bar, bx + bw, by + bh + self.bar))  # client coordinates
+        else:
             # Indeterminate progress: a short pill gliding along a hairline track.
             tw, th = round(120 * s), max(2, round(3 * s))
             tx, py = cx - tw // 2, ty + round(22 * s)
@@ -451,6 +580,7 @@ class AppWindow:
             pos = (math.sin(self._phase * 1.6) + 1) / 2
             sx = tx + round((tw - seg) * pos)
             d.rounded_rectangle((sx, py, sx + seg, py + th), radius=th, fill=mix(bg, fg, 0.65))
+            self._splash_button = None
         return im
 
     def _repaint_bar(self) -> None:
@@ -470,7 +600,8 @@ class AppWindow:
     # ------------------------------------------------------------------ actions
     def _act(self, name: str) -> None:
         if name == "back" and self.display_id is not None:
-            threading.Thread(target=adb.shell, args=(f"input -d {self.display_id} keyevent 4",), daemon=True).start()
+            display = self.protected.input_display if self.protected else self.display_id
+            threading.Thread(target=adb.shell, args=(f"input -d {display} keyevent 4",), daemon=True).start()
         elif name == "pin":
             self.pinned = not self.pinned
             win32gui.SetWindowPos(self.hwnd, win32con.HWND_TOPMOST if self.pinned else win32con.HWND_NOTOPMOST,
@@ -481,10 +612,16 @@ class AppWindow:
             win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE if winapi.user32.IsZoomed(self.hwnd) else win32con.SW_MAXIMIZE)
         elif name == "close":
             self.close()
+        elif name == "retry":
+            self.retry()
+        elif name == "unlock":
+            self.manager.on_unlock()
         self._repaint_bar()
 
     def _set_hover(self, name: str | None) -> None:
         if name != self.hover:
+            if {"retry", "unlock"} & {name, self.hover}:
+                win32gui.InvalidateRect(self.hwnd, None, False)
             self.hover = name
             self._repaint_bar()
 
@@ -525,15 +662,15 @@ class AppWindow:
         if msg == win32con.WM_ACTIVATE:
             self.active = (wp & 0xFFFF) != win32con.WA_INACTIVE
             if self.active and self.child:
-                win32gui.SetFocus(self.child)
+                winapi.user32.SetFocus(self.view)
             self._repaint_bar()
             return 0
         if msg == win32con.WM_SETFOCUS and self.child:
-            win32gui.SetFocus(self.child)
+            winapi.user32.SetFocus(self.view)
             return 0
         if msg == win32con.WM_PARENTNOTIFY and self.child and (wp & 0xFFFF) in (
                 win32con.WM_LBUTTONDOWN, win32con.WM_RBUTTONDOWN, win32con.WM_MBUTTONDOWN):
-            win32gui.SetFocus(self.child)  # a click into the app gives it the keyboard
+            winapi.user32.SetFocus(self.view)  # a click into the app gives it the keyboard
             return 0
         if msg == win32con.WM_MOUSEMOVE:
             x, y = ctypes.c_short(lp & 0xFFFF).value, ctypes.c_short(lp >> 16 & 0xFFFF).value
@@ -585,6 +722,10 @@ class AppWindow:
             elif wp == TIMER_SPLASH:
                 self._phase += 0.033 * 2.4
                 win32gui.InvalidateRect(hwnd, None, False)
+            elif wp == TIMER_RETRY:
+                winapi.user32.KillTimer(hwnd, TIMER_RETRY)
+                if not self.closing and self.status == RECONNECTING:
+                    self._start()
             elif wp == TIMER_KILL:
                 winapi.user32.KillTimer(hwnd, TIMER_KILL)
                 if self.proc and self.proc.poll() is None:
@@ -604,19 +745,11 @@ class AppWindow:
                                   win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
             return 0
         if msg == WM_APP_EMBED:
-            self._embed(lp)
+            if wp == self._gen:
+                self._embed(lp)
             return 0
-        if msg == WM_APP_FAILED:
-            winapi.user32.KillTimer(hwnd, TIMER_SPLASH)
-            win32gui.InvalidateRect(hwnd, None, False)
-            return 0
-        if msg == WM_APP_EXITED:
-            if self.child or self.closing:
-                win32gui.DestroyWindow(hwnd)
-            else:  # scrcpy gave up before showing anything: say why, keep the window to read it
-                self.error = self.error or "The app couldn't start. See the logs folder."
-                winapi.user32.KillTimer(hwnd, TIMER_SPLASH)
-                win32gui.InvalidateRect(hwnd, None, False)
+        if msg in (WM_APP_FAILED, WM_APP_EXITED):
+            self._lost(wp, exited=msg == WM_APP_EXITED)
             return 0
         if msg == win32con.WM_CLOSE:
             self._save_rect()
@@ -633,8 +766,10 @@ class AppWindow:
             win32gui.DestroyWindow(hwnd)
             return 0
         if msg == win32con.WM_DESTROY:
-            for t in (TIMER_SAMPLE, TIMER_SPLASH, TIMER_FADE, TIMER_KILL):
+            for t in (TIMER_SAMPLE, TIMER_SPLASH, TIMER_FADE, TIMER_KILL, TIMER_RETRY):
                 winapi.user32.KillTimer(hwnd, t)
+            if self.protected:
+                self.protected.end(remove=True)
             if self.proc and self.proc.poll() is None:
                 self.proc.kill()
             self.manager.closed(self)

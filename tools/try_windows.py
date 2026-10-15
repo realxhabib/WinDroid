@@ -9,7 +9,7 @@ from androiddesktop.vm import VM
 
 winapi.dpi_aware()
 vm, catalog = VM(), Catalog()
-manager = WindowManager(vm, catalog)
+manager = WindowManager(vm, catalog, ipc=False)  # leaves a running agent alone
 manager.start()
 for pkg in sys.argv[1:] or ["com.google.android.deskclock"]:
     manager.open(pkg)
