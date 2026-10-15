@@ -147,8 +147,11 @@ def pythonw() -> str:
     return str(w if w.exists() else exe)
 
 
-def set_app_identity(hwnd: int, app_id: str, name: str, ico: Path | None, relaunch_args: str) -> None:
-    """Give a window its own taskbar button (grouping, icon, pin-to-taskbar relaunch)."""
+def set_app_identity(hwnd: int, app_id: str, name: str, relaunch_args: str) -> None:
+    """Give a window its own taskbar button (grouping, pin-to-taskbar relaunch). The button shows the
+    window's own icon (set_window_icon). No RelaunchIconResource: Windows 11's taskbar draws a blank
+    page for one that points into %LOCALAPPDATA% (only %TEMP% and system files worked when tested),
+    and with none set it uses the window's icon."""
     try:
         store = propsys.SHGetPropertyStoreForWindow(hwnd, propsys.IID_IPropertyStore)
         store.SetValue(pscon.PKEY_AppUserModel_ID, propsys.PROPVARIANTType(app_id, pythoncom.VT_LPWSTR))
@@ -156,9 +159,6 @@ def set_app_identity(hwnd: int, app_id: str, name: str, ico: Path | None, relaun
                        propsys.PROPVARIANTType(f'"{pythonw()}" {relaunch_args}', pythoncom.VT_LPWSTR))
         store.SetValue(pscon.PKEY_AppUserModel_RelaunchDisplayNameResource,
                        propsys.PROPVARIANTType(name, pythoncom.VT_LPWSTR))
-        if ico and ico.exists():
-            store.SetValue(pscon.PKEY_AppUserModel_RelaunchIconResource,
-                           propsys.PROPVARIANTType(f"{ico},0", pythoncom.VT_LPWSTR))
         store.Commit()
     except Exception:
         pass

@@ -211,7 +211,7 @@ class AppWindow:
         self.manager.by_hwnd[self.hwnd] = self  # messages sent during CreateWindowEx don't always reach us
         self.scale = winapi.dpi_of(self.hwnd) / 96
         winapi.set_app_identity(self.hwnd, f"AndroidDesktop.App.{self.app.package}"[:128], self.app.label,
-                                self.app.ico, f"-m androiddesktop open {self.app.package}")
+                                f"-m androiddesktop open {self.app.package}")
         winapi.set_window_icon(self.hwnd, self.app.ico, winapi.dpi_of(self.hwnd))
         winapi.dwm_int(self.hwnd, winapi.DWMWA_WINDOW_CORNER_PREFERENCE, winapi.DWMWCP_ROUND)
         winapi.dwm_int(self.hwnd, winapi.DWMWA_USE_IMMERSIVE_DARK_MODE, 0 if self.light else 1)

@@ -170,7 +170,7 @@ class Agent:
             winapi.user32.SetWindowPos(hwnd, 0, left + (right - left - w) // 2, top + (bottom - top - h) // 2,
                                        w, h, 0x0014)  # SWP_NOZORDER | SWP_NOACTIVATE
             winapi.dwm_int(hwnd, winapi.DWMWA_WINDOW_CORNER_PREFERENCE, winapi.DWMWCP_ROUND)
-            winapi.set_app_identity(hwnd, shortcuts.LAUNCHER_ID, "Android Desktop", shortcuts.MAIN_ICON, "-m androiddesktop")
+            winapi.set_app_identity(hwnd, shortcuts.LAUNCHER_ID, "Android Desktop", "-m androiddesktop")
             winapi.set_window_icon(hwnd, shortcuts.MAIN_ICON, winapi.dpi_of(hwnd))
 
     def _hwnd(self) -> int:

@@ -65,7 +65,7 @@ FLAGS = (1 << 0      # PUBLIC
          | 1 << 12   # ALWAYS_UNLOCKED
          | 1 << 13   # TOUCH_FEEDBACK_DISABLED
          | 1 << 14)  # OWN_FOCUS
-MAX_SLOTS = 10  # the emulator's multi-display service numbers its displays 1..10
+MAX_SLOTS = 8  # "valid ids are from 1 to 8 inclusive", says `emu multidisplay add` (emulator 37)
 
 OPENING, SHOWING, FAILED, ENDING = "opening", "showing", "failed", "ending"
 
@@ -303,7 +303,19 @@ class Protected:
                     self.slot = free[0]
                     _slots.add(self.slot)
                 self.size = (w, h)
-                emu("multidisplay", "add", str(self.slot), str(w), str(h), str(self.density), str(FLAGS))
+                for _ in range(4):
+                    try:
+                        emu("multidisplay", "add", str(self.slot), str(w), str(h), str(self.density), str(FLAGS))
+                        break
+                    except RuntimeError as e:
+                        # A windowless emulator answers "KO: setMultiDisplay not supported" but makes
+                        # the display anyway, so what counts is whether it turns up. (The first request
+                        # after Android starts may also only wake its MultiDisplayProvider: ask again.)
+                        if "not supported" not in str(e):
+                            raise
+                        time.sleep(1.5)
+                        if emulator_displays().get(self.slot) is not None:
+                            break
                 end = time.monotonic() + 10
                 while (display := emulator_displays().get(self.slot)) is None or not root_tasks(display):
                     if time.monotonic() > end:
