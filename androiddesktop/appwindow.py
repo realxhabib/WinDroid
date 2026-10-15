@@ -1,0 +1,642 @@
+"""One Android app as its own sleek, frameless Windows window.
+
+The window draws a slim bar (back, icon, title, pin, minimize, maximize, close) that takes on the
+app's own top color, so it reads as part of the app rather than a Windows title bar. It keeps the
+native frame underneath: rounded corners, shadow, resize edges, Aero Snap and the Windows 11 Snap
+Layouts flyout on the maximize button.
+
+Below the bar sits the app itself: a scrcpy window rendering an Android virtual display made just
+for this app, re-parented as a borderless child. Its "flex display" follows the window size, so
+resizing the window resizes the app, which re-lays itself out like a desktop app.
+"""
+from __future__ import annotations
+
+import ctypes
+import ctypes.wintypes as wt
+import math
+import re
+import shlex
+import subprocess
+import threading
+import time
+from typing import TYPE_CHECKING
+
+import win32api
+import win32con
+import win32gui
+import win32process
+from PIL import Image, ImageDraw, ImageFilter
+
+from . import adb, state, winapi
+from .catalog import App
+from .log import log
+from .paths import LOGS, SERIAL, android_env
+from .runtime import SCRCPY_EXE
+
+if TYPE_CHECKING:
+    from .manager import WindowManager
+
+WM_APP_EMBED = win32con.WM_APP + 1  # lparam: the scrcpy window
+WM_APP_EXITED = win32con.WM_APP + 2
+WM_APP_FAILED = win32con.WM_APP + 3
+WM_DPICHANGED = 0x02E0
+WM_NCMOUSELEAVE = 0x02A2
+WM_MOUSELEAVE = 0x02A3
+HTMAXBUTTON = 9
+
+TIMER_SAMPLE, TIMER_SPLASH, TIMER_FADE, TIMER_KILL = 1, 2, 3, 4
+
+BAR_DIP = 30
+CAPTION_BTN_DIP = 46
+SMALL_BTN_DIP = 40
+TOP_RESIZE_DIP = 5
+DEFAULT_SIZE_DIP = (412, 860)
+MIN_SIZE_DIP = (280, 220)
+
+GLYPHS = {"back": "", "pin": "", "pinned": "", "min": "", "max": "",
+          "restore": "", "close": ""}
+TOOLTIPS = {"back": "Back", "pin": "Keep on top", "min": "Minimize", "max": "Maximize", "close": "Close"}
+CLOSE_RED = (196, 43, 28)
+_LAUNCH_LOCK = threading.Lock()
+
+
+def mix(a: tuple, b: tuple, t: float) -> tuple[int, int, int]:
+    return tuple(round(x + (y - x) * t) for x, y in zip(a[:3], b[:3]))
+
+
+def luminance(c: tuple) -> float:
+    return (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255
+
+
+def on_color(bg: tuple) -> tuple[int, int, int]:
+    return (28, 28, 30) if luminance(bg) > 0.58 else (250, 250, 252)
+
+
+class AppWindow:
+    def __init__(self, manager: WindowManager, app: App, intent: list[str] | None = None) -> None:
+        self.manager = manager
+        self.app = app
+        self.intent = intent
+        self.hwnd = 0
+        self.child = 0
+        self.proc: subprocess.Popen | None = None
+        self.display_id: int | None = None
+        self.light = winapi.light_theme()
+        self.bg = (243, 243, 243) if self.light else (32, 32, 32)
+        self._fade_from = self._fade_to = self.bg
+        self._fade_t = 1.0
+        self.hover: str | None = None
+        self.pressed: str | None = None
+        self.active = True
+        self.pinned = False
+        self.closing = False
+        self.error = ""
+        self.scale = 1.0
+        self.opened_at = time.monotonic()
+        self._phase = 0.0
+        self._icons: dict[int, Image.Image] = {}
+
+    # ------------------------------------------------------------------ geometry
+    @property
+    def bar(self) -> int:
+        return round(BAR_DIP * self.scale)
+
+    def _client(self) -> tuple[int, int]:
+        _, _, w, h = win32gui.GetClientRect(self.hwnd)
+        return w, h
+
+    def _buttons(self, width: int) -> list[tuple[str, int, int]]:
+        s = self.scale
+        cap, small = round(CAPTION_BTN_DIP * s), round(SMALL_BTN_DIP * s)
+        out = [("back", 0, small)]
+        x = width
+        for name, w in (("close", cap), ("max", cap), ("min", cap), ("pin", small)):
+            out.append((name, x - w, x))
+            x -= w
+        return out
+
+    def _button_at(self, x: int, y: int) -> str | None:
+        if y < 0 or y >= self.bar:
+            return None
+        for name, x0, x1 in self._buttons(self._client()[0]):
+            if x0 <= x < x1:
+                return name
+        return None
+
+    def _initial_rect(self) -> tuple[int, int, int, int, bool]:
+        saved = (state.get("windows") or {}).get(self.app.package)
+        if saved:
+            x, y, w, h, maximized = saved
+            mon = win32api.MonitorFromRect((x, y, x + w, y + h), win32con.MONITOR_DEFAULTTONULL)
+            if mon:
+                return x, y, w, h, bool(maximized)
+        mon = win32api.MonitorFromPoint(win32api.GetCursorPos(), win32con.MONITOR_DEFAULTTONEAREST)
+        info = win32api.GetMonitorInfo(mon)
+        left, top, right, bottom = info["Work"]
+        dpi = ctypes.c_uint()
+        ctypes.windll.shcore.GetDpiForMonitor(mon.handle, 0, ctypes.byref(dpi), ctypes.byref(ctypes.c_uint()))
+        s = (dpi.value or 96) / 96
+        w = min(round(DEFAULT_SIZE_DIP[0] * s), right - left - 40)
+        h = min(round(DEFAULT_SIZE_DIP[1] * s), bottom - top - round(40 * s))
+        step = round(28 * s) * (len(self.manager.windows) % 6)
+        x = left + (right - left - w) // 2 + step
+        y = top + (bottom - top - h) // 2 + step
+        return x, y, w, h, False
+
+    def _save_rect(self) -> None:
+        try:
+            placement = win32gui.GetWindowPlacement(self.hwnd)
+            l, t, r, b = placement[4]
+            maximized = placement[1] == win32con.SW_SHOWMAXIMIZED
+            windows = dict(state.get("windows") or {})
+            windows[self.app.package] = [l, t, r - l, b - t, maximized]
+            state.put("windows", windows)
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------ lifecycle
+    def create(self) -> None:
+        x, y, w, h, maximized = self._initial_rect()
+        style = win32con.WS_OVERLAPPEDWINDOW | win32con.WS_CLIPCHILDREN
+        self.manager.creating = self
+        self.hwnd = win32gui.CreateWindowEx(0, self.manager.window_class, self.app.label, style, x, y, w, h,
+                                            0, 0, win32api.GetModuleHandle(None), None)
+        self.manager.creating = None
+        self.manager.by_hwnd[self.hwnd] = self  # messages sent during CreateWindowEx don't always reach us
+        self.scale = winapi.dpi_of(self.hwnd) / 96
+        winapi.set_app_identity(self.hwnd, f"AndroidDesktop.App.{self.app.package}"[:128], self.app.label,
+                                self.app.ico, f"-m androiddesktop open {self.app.package}")
+        winapi.set_window_icon(self.hwnd, self.app.ico, winapi.dpi_of(self.hwnd))
+        winapi.dwm_int(self.hwnd, winapi.DWMWA_WINDOW_CORNER_PREFERENCE, winapi.DWMWCP_ROUND)
+        winapi.dwm_int(self.hwnd, winapi.DWMWA_USE_IMMERSIVE_DARK_MODE, 0 if self.light else 1)
+        self._apply_border()
+        win32gui.SetWindowPos(self.hwnd, 0, 0, 0, 0, 0, win32con.SWP_FRAMECHANGED | win32con.SWP_NOMOVE |
+                              win32con.SWP_NOSIZE | win32con.SWP_NOZORDER)
+        win32gui.ShowWindow(self.hwnd, win32con.SW_SHOWMAXIMIZED if maximized else win32con.SW_SHOWNORMAL)
+        self.focus()
+        ctypes.windll.user32.SetTimer(self.hwnd, TIMER_SPLASH, 33, None)
+        ctypes.windll.user32.SetTimer(self.hwnd, TIMER_SAMPLE, 350, None)
+        threading.Thread(target=self._launch, daemon=True, name=f"launch-{self.app.package}").start()
+
+    def focus(self) -> None:
+        if win32gui.IsIconic(self.hwnd):
+            win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE)
+        try:
+            win32gui.SetForegroundWindow(self.hwnd)
+        except Exception:
+            # Windows refuses focus to background processes; flash the taskbar button instead.
+            ctypes.windll.user32.FlashWindow(self.hwnd, True)
+
+    def close(self) -> None:
+        if self.hwnd and win32gui.IsWindow(self.hwnd):
+            win32gui.PostMessage(self.hwnd, win32con.WM_CLOSE, 0, 0)
+
+    def _launch(self) -> None:
+        """Worker thread: make sure Android is up, then start this app on a virtual display of its own."""
+        try:
+            if not self.manager.vm.ensure_running():
+                raise RuntimeError(self.manager.vm.detail or "Android didn't start.")
+            cw, ch = self._client()
+            w, h = cw, max(ch - self.bar, 1)
+            x, y = win32gui.ClientToScreen(self.hwnd, (0, self.bar))
+            density = round(160 * self.scale * float(state.get("density", 1.0)))
+            args = [str(SCRCPY_EXE), "-s", SERIAL, f"--new-display={w}x{h}/{density}", "--flex-display",
+                    f"--start-app={self.app.package}", "--no-vd-system-decorations", "--keep-active",
+                    "--no-audio",  # the emulator already plays Android's sound on the PC
+                    "--window-borderless", f"--window-title=androiddesktop:{self.app.package}",
+                    f"--window-x={x}", f"--window-y={y}",  # size comes from --new-display
+                    "--no-window-aspect-ratio-lock",
+                    # A real (virtual) hardware keyboard: Android keeps its on-screen keyboard away and
+                    # shortcuts behave like on a PC.
+                    "--keyboard=uhid", "--display-ime-policy=local",
+                    # Right-click and the mouse's back button go Back; Shift+right-click is a real right-click.
+                    "--mouse-bind=b+b+:++++",
+                    "--video-codec=h264", "--video-bit-rate=12M", "--max-fps=60",
+                    "--background-color=%02x%02x%02x" % self.bg, "--no-terminal-title"]
+            (LOGS / "windows").mkdir(parents=True, exist_ok=True)
+            # One at a time: every scrcpy pushes its server to the same path on the device, and
+            # simultaneous starts trip over each other ("Server connection failed").
+            # scrcpy opens its window before its server is up, so wait for the server's display.
+            with _LAUNCH_LOCK:
+                if self.closing:
+                    return
+                self.proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                             env=android_env(), creationflags=adb.CREATE_NO_WINDOW, text=True,
+                                             encoding="utf-8", errors="replace")
+                threading.Thread(target=self._read_output, daemon=True).start()
+                end = time.monotonic() + 30
+                while self.display_id is None:
+                    if time.monotonic() > end or self.proc.poll() is not None:
+                        raise RuntimeError(self.error or "The app didn't start.")
+                    time.sleep(0.03)
+            while not (found := self._scrcpy_windows()):
+                if time.monotonic() > end or self.proc.poll() is not None:
+                    raise RuntimeError(self.error or "The app window didn't appear.")
+                time.sleep(0.03)
+            win32gui.PostMessage(self.hwnd, WM_APP_EMBED, 0, found[0])
+        except Exception as e:
+            log(f"{self.app.package}: launch failed: {e!r}")
+            self.error = str(e)
+            if self.hwnd:
+                win32gui.PostMessage(self.hwnd, WM_APP_FAILED, 0, 0)
+
+    def _read_output(self) -> None:
+        proc = self.proc
+        with (LOGS / "windows" / f"{self.app.package}.log").open("w", encoding="utf-8") as log:
+            for line in proc.stdout:
+                log.write(line)
+                log.flush()
+                m = re.search(r"New display: .*\(id=(\d+)\)", line)
+                if m:
+                    self.display_id = int(m.group(1))
+                elif "ERROR" in line and not self.child:
+                    self.error = line.split("ERROR:", 1)[-1].strip()
+        proc.wait()
+        if self.hwnd and win32gui.IsWindow(self.hwnd):
+            win32gui.PostMessage(self.hwnd, WM_APP_EXITED, 0, 0)
+
+    def _scrcpy_windows(self) -> list[int]:
+        """scrcpy's video window(s) still floating at top level. SDL also makes short-lived helper
+        windows, so match its class and the exact title we gave it."""
+        if not self.proc:
+            return []
+        title = f"androiddesktop:{self.app.package}"
+        found: list[int] = []
+
+        def visit(hwnd: int, _: object) -> bool:
+            try:
+                if (win32gui.GetClassName(hwnd) == "SDL_app" and win32gui.GetWindowText(hwnd) == title
+                        and win32process.GetWindowThreadProcessId(hwnd)[1] == self.proc.pid):
+                    found.append(hwnd)
+            except win32gui.error:
+                pass  # closed while we looked
+            return True
+
+        win32gui.EnumWindows(visit, None)
+        return found
+
+    def _adopt(self) -> None:
+        """If SDL recreated its window (renderer change), pull the new one in too."""
+        if self.closing or not self.proc or self.proc.poll() is not None:
+            return
+        for hwnd in self._scrcpy_windows():  # top-level only: an embedded window isn't listed
+            self._embed(hwnd)
+
+    def _embed(self, child: int) -> None:
+        if not win32gui.IsWindow(child) or self.closing:
+            return
+        if child == self.child and winapi.user32.GetAncestor(child, 1) == self.hwnd:
+            return  # already ours (the adopt timer got there first)
+        u = winapi.user32
+        style = u.GetWindowLongPtrW(child, win32con.GWL_STYLE)
+        style &= ~(win32con.WS_POPUP | win32con.WS_CAPTION | win32con.WS_THICKFRAME | win32con.WS_SYSMENU |
+                   win32con.WS_MINIMIZEBOX | win32con.WS_MAXIMIZEBOX)
+        u.SetWindowLongPtrW(child, win32con.GWL_STYLE, style | win32con.WS_CHILD | win32con.WS_CLIPSIBLINGS)
+        ex = u.GetWindowLongPtrW(child, win32con.GWL_EXSTYLE)
+        ex &= ~(win32con.WS_EX_APPWINDOW | win32con.WS_EX_TOOLWINDOW | win32con.WS_EX_WINDOWEDGE |
+                win32con.WS_EX_CLIENTEDGE)
+        u.SetWindowLongPtrW(child, win32con.GWL_EXSTYLE, ex)
+        u.SetParent(child, self.hwnd)
+        if u.GetAncestor(child, 1) != self.hwnd:  # GA_PARENT: SDL may still be busy creating it; retry next tick
+            log(f"{self.app.package}: re-parenting {child:#x} didn't take yet")
+            return
+        self.child = child
+        log(f"{self.app.package}: embedded {child:#x} (display {self.display_id})")
+        self._layout(frame_changed=True)
+        win32gui.ShowWindow(child, win32con.SW_SHOW)
+        u.KillTimer(self.hwnd, TIMER_SPLASH)
+        if self.intent:
+            self.run_intent(self.intent)
+            self.intent = None
+        if win32gui.GetForegroundWindow() == self.hwnd:
+            win32gui.SetFocus(child)
+        win32gui.InvalidateRect(self.hwnd, None, False)
+        self.manager.changed()
+
+    def run_intent(self, intent: list[str]) -> None:
+        """Start an activity inside this window, e.g. a Play Store search."""
+        if self.display_id is not None:
+            command = f"am start --display {self.display_id} " + shlex.join(intent)
+            threading.Thread(target=adb.shell, args=(command,), daemon=True).start()
+
+    def _layout(self, frame_changed: bool = False) -> None:
+        if not self.child:
+            return
+        cw, ch = self._client()
+        flags = win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE | (win32con.SWP_FRAMECHANGED if frame_changed else 0)
+        win32gui.SetWindowPos(self.child, 0, 0, self.bar, cw, max(ch - self.bar, 1), flags)
+
+    def _child_misplaced(self) -> bool:
+        cw, ch = self._client()
+        l, t, r, b = win32gui.GetWindowRect(self.child)
+        x, y = win32gui.ScreenToClient(self.hwnd, (l, t))
+        return (x, y, r - l, b - t) != (0, self.bar, cw, max(ch - self.bar, 1))
+
+    # ------------------------------------------------------------------ color
+    def _sample(self) -> None:
+        """Match the bar to the app's own top color, so window and app read as one surface."""
+        if not self.child or win32gui.IsIconic(self.hwnd):
+            return
+        if self._child_misplaced():  # scrcpy sized its own window once the video started
+            self._layout()
+        cw, _ = self._client()
+        img = winapi.capture(self.child, cw, 3)
+        if img is None:
+            return
+        colors = img.crop((0, 1, cw, 2)).getcolors(cw)
+        if not colors:
+            return
+        count, color = max(colors)
+        if count < cw * 0.25:
+            return  # no clear background color (an image header, say): keep the current one
+        if color != self._fade_to:
+            self._fade_from, self._fade_to, self._fade_t = self.bg, color, 0.0
+            winapi.user32.SetTimer(self.hwnd, TIMER_FADE, 16, None)
+
+    def _fade_step(self) -> None:
+        self._fade_t = min(1.0, self._fade_t + 0.14)
+        t = 1 - (1 - self._fade_t) ** 3  # ease-out
+        self.bg = mix(self._fade_from, self._fade_to, t)
+        self._apply_border()
+        self._repaint_bar()
+        if self._fade_t >= 1.0:
+            winapi.user32.KillTimer(self.hwnd, TIMER_FADE)
+
+    def _apply_border(self) -> None:
+        border = mix(self.bg, (0, 0, 0) if luminance(self.bg) > 0.5 else (255, 255, 255), 0.12)
+        winapi.dwm_int(self.hwnd, winapi.DWMWA_BORDER_COLOR, winapi.colorref(border))
+
+    # ------------------------------------------------------------------ drawing
+    def _icon(self, px: int) -> Image.Image | None:
+        if px not in self._icons:
+            try:
+                self._icons[px] = Image.open(self.app.icon).convert("RGBA").resize((px, px), Image.LANCZOS)
+            except OSError:
+                return None
+        return self._icons[px]
+
+    def _render_bar(self, width: int) -> Image.Image:
+        s, h = self.scale, self.bar
+        bg = self.bg
+        fg = on_color(bg)
+        dim = mix(bg, fg, 0.42)
+        im = Image.new("RGB", (max(width, 1), h), bg)
+        d = ImageDraw.Draw(im)
+        maximized = bool(winapi.user32.IsZoomed(self.hwnd))
+        glyph_font = winapi.font("icons", max(8, round(10 * s)))
+        for name, x0, x1 in self._buttons(width):
+            hot, down = self.hover == name, self.pressed == name
+            color = fg if self.active else dim
+            if name == "close" and (hot or down):
+                d.rectangle((x0, 0, x1, h), fill=mix(CLOSE_RED, bg, 0.12 if down else 0))
+                color = (255, 255, 255)
+            elif hot or down:
+                d.rectangle((x0, 0, x1, h), fill=mix(bg, fg, 0.15 if down else 0.09))
+            if name == "back" and self.display_id is None:
+                color = mix(bg, fg, 0.25)
+            glyph = GLYPHS["restore" if name == "max" and maximized else
+                           "pinned" if name == "pin" and self.pinned else name]
+            d.text(((x0 + x1) / 2, h / 2), glyph, font=glyph_font, fill=color, anchor="mm")
+        x = round(SMALL_BTN_DIP * s) + round(2 * s)
+        icon = self._icon(round(16 * s))
+        if icon:
+            if not self.active:
+                icon = Image.blend(Image.new("RGBA", icon.size, (*bg, 0)), icon, 0.6)
+            im.paste(icon, (x, (h - icon.height) // 2), icon)
+            x += icon.width + round(8 * s)
+        title_font = winapi.font("text", max(9, round(12 * s)))
+        room = self._buttons(width)[-1][1] - x - round(10 * s)
+        title = self.app.label
+        while title and d.textlength(title, font=title_font) > room:
+            title = title[:-2] + "…" if len(title) > 2 else ""
+        d.text((x, h / 2), title, font=title_font, fill=fg if self.active else dim, anchor="lm")
+        return im
+
+    def _render_splash(self, width: int, height: int) -> Image.Image:
+        s = self.scale
+        bg = self.bg
+        fg = on_color(bg)
+        im = Image.new("RGB", (max(width, 1), max(height, 1)), bg)
+        cx, cy = width // 2, int(height * 0.42)
+        size = round(76 * s)
+        icon = self._icon(size)
+        if icon:
+            shadow = Image.new("RGBA", (size + round(40 * s),) * 2, (0, 0, 0, 0))
+            ImageDraw.Draw(shadow).rounded_rectangle(
+                (round(20 * s), round(26 * s), round(20 * s) + size, round(26 * s) + size),
+                radius=round(size * 0.24), fill=(0, 0, 0, 70 if luminance(bg) > 0.5 else 140))
+            shadow = shadow.filter(ImageFilter.GaussianBlur(round(10 * s)))
+            im.paste(shadow, (cx - shadow.width // 2, cy - shadow.height // 2), shadow)
+            # A gentle breathing scale while Android gets ready.
+            breathe = 1 + 0.035 * math.sin(self._phase * 2.2)
+            px = round(size * breathe)
+            im.paste(icon.resize((px, px), Image.LANCZOS), (cx - px // 2, cy - px // 2),
+                     icon.resize((px, px), Image.LANCZOS))
+        d = ImageDraw.Draw(im)
+        text_font = winapi.font("text", max(9, round(13 * s)))
+        if self.error:
+            message = self.error
+        elif self.manager.vm.state != "running":
+            message = self.manager.vm.detail or "Starting Android..."
+        else:
+            message = f"Opening {self.app.label}..."
+        ty = cy + size // 2 + round(30 * s)
+        d.text((cx, ty), message, font=text_font, fill=mix(bg, fg, 0.7), anchor="mm")
+        if not self.error:
+            # Indeterminate progress: a short pill gliding along a hairline track.
+            tw, th = round(120 * s), max(2, round(3 * s))
+            tx, py = cx - tw // 2, ty + round(22 * s)
+            d.rounded_rectangle((tx, py, tx + tw, py + th), radius=th, fill=mix(bg, fg, 0.12))
+            seg = round(tw * 0.32)
+            pos = (math.sin(self._phase * 1.6) + 1) / 2
+            sx = tx + round((tw - seg) * pos)
+            d.rounded_rectangle((sx, py, sx + seg, py + th), radius=th, fill=mix(bg, fg, 0.65))
+        return im
+
+    def _repaint_bar(self) -> None:
+        w, _ = self._client()
+        win32gui.InvalidateRect(self.hwnd, (0, 0, w, self.bar), False)
+
+    def _paint(self) -> None:
+        hdc, ps = win32gui.BeginPaint(self.hwnd)
+        try:
+            w, h = self._client()
+            winapi.blit(hdc, self._render_bar(w), 0, 0)
+            if not self.child:
+                winapi.blit(hdc, self._render_splash(w, h - self.bar), 0, self.bar)
+        finally:
+            win32gui.EndPaint(self.hwnd, ps)
+
+    # ------------------------------------------------------------------ actions
+    def _act(self, name: str) -> None:
+        if name == "back" and self.display_id is not None:
+            threading.Thread(target=adb.shell, args=(f"input -d {self.display_id} keyevent 4",), daemon=True).start()
+        elif name == "pin":
+            self.pinned = not self.pinned
+            win32gui.SetWindowPos(self.hwnd, win32con.HWND_TOPMOST if self.pinned else win32con.HWND_NOTOPMOST,
+                                  0, 0, 0, 0, win32con.SWP_NOMOVE | win32con.SWP_NOSIZE)
+        elif name == "min":
+            win32gui.ShowWindow(self.hwnd, win32con.SW_MINIMIZE)
+        elif name == "max":
+            win32gui.ShowWindow(self.hwnd, win32con.SW_RESTORE if winapi.user32.IsZoomed(self.hwnd) else win32con.SW_MAXIMIZE)
+        elif name == "close":
+            self.close()
+        self._repaint_bar()
+
+    def _set_hover(self, name: str | None) -> None:
+        if name != self.hover:
+            self.hover = name
+            self._repaint_bar()
+
+    # ------------------------------------------------------------------ window procedure
+    def wndproc(self, hwnd: int, msg: int, wp: int, lp: int) -> int:
+        if msg == win32con.WM_NCCALCSIZE and wp:
+            rect = ctypes.cast(lp, ctypes.POINTER(wt.RECT)).contents
+            top = rect.top
+            win32gui.DefWindowProc(hwnd, msg, wp, lp)  # standard left/right/bottom resize frame
+            rect.top = top  # ...but no caption and no top border: our bar is the top edge
+            if winapi.user32.IsZoomed(hwnd):
+                rect.top += winapi.frame_thickness(winapi.dpi_of(hwnd))
+            return 0
+        if msg == win32con.WM_NCHITTEST:
+            hit = win32gui.DefWindowProc(hwnd, msg, wp, lp)
+            if hit != win32con.HTCLIENT:
+                return hit
+            x, y = win32gui.ScreenToClient(hwnd, (ctypes.c_short(lp & 0xFFFF).value, ctypes.c_short(lp >> 16 & 0xFFFF).value))
+            if not winapi.user32.IsZoomed(hwnd) and y < round(TOP_RESIZE_DIP * self.scale):
+                corner = round(16 * self.scale)
+                w = self._client()[0]
+                return win32con.HTTOPLEFT if x < corner else win32con.HTTOPRIGHT if x >= w - corner else win32con.HTTOP
+            button = self._button_at(x, y)
+            if button == "max":
+                return HTMAXBUTTON  # lets Windows 11 show its Snap Layouts flyout
+            if button:
+                return win32con.HTCLIENT
+            return win32con.HTCAPTION if y < self.bar else win32con.HTCLIENT
+        if msg == win32con.WM_PAINT:
+            self._paint()
+            return 0
+        if msg == win32con.WM_ERASEBKGND:
+            return 1
+        if msg == win32con.WM_SIZE:
+            self._layout()
+            win32gui.InvalidateRect(hwnd, None, False)
+            return 0
+        if msg == win32con.WM_ACTIVATE:
+            self.active = (wp & 0xFFFF) != win32con.WA_INACTIVE
+            if self.active and self.child:
+                win32gui.SetFocus(self.child)
+            self._repaint_bar()
+            return 0
+        if msg == win32con.WM_SETFOCUS and self.child:
+            win32gui.SetFocus(self.child)
+            return 0
+        if msg == win32con.WM_PARENTNOTIFY and self.child and (wp & 0xFFFF) in (
+                win32con.WM_LBUTTONDOWN, win32con.WM_RBUTTONDOWN, win32con.WM_MBUTTONDOWN):
+            win32gui.SetFocus(self.child)  # a click into the app gives it the keyboard
+            return 0
+        if msg == win32con.WM_MOUSEMOVE:
+            x, y = ctypes.c_short(lp & 0xFFFF).value, ctypes.c_short(lp >> 16 & 0xFFFF).value
+            self._set_hover(self._button_at(x, y))
+            winapi.track_leave(hwnd)
+            return 0
+        if msg == WM_MOUSELEAVE:
+            if self.hover != "max":
+                self._set_hover(None)
+            return 0
+        if msg == win32con.WM_NCMOUSEMOVE:
+            self._set_hover("max" if wp == HTMAXBUTTON else None)
+            winapi.track_leave(hwnd, nonclient=True)
+            return win32gui.DefWindowProc(hwnd, msg, wp, lp)
+        if msg == WM_NCMOUSELEAVE:
+            if self.hover == "max":
+                self._set_hover(None)
+            return 0
+        if msg == win32con.WM_LBUTTONDOWN:
+            x, y = ctypes.c_short(lp & 0xFFFF).value, ctypes.c_short(lp >> 16 & 0xFFFF).value
+            self.pressed = self._button_at(x, y)
+            if self.pressed:
+                win32gui.SetCapture(hwnd)
+                self._repaint_bar()
+            return 0
+        if msg == win32con.WM_LBUTTONUP:
+            x, y = ctypes.c_short(lp & 0xFFFF).value, ctypes.c_short(lp >> 16 & 0xFFFF).value
+            pressed, self.pressed = self.pressed, None
+            win32gui.ReleaseCapture()
+            if pressed and pressed == self._button_at(x, y):
+                self._act(pressed)
+            self._repaint_bar()
+            return 0
+        if msg == win32con.WM_NCLBUTTONDOWN and wp == HTMAXBUTTON:
+            self.pressed = "max"
+            self._repaint_bar()
+            return 0
+        if msg == win32con.WM_NCLBUTTONUP and wp == HTMAXBUTTON:
+            if self.pressed == "max":
+                self._act("max")
+            self.pressed = None
+            return 0
+        if msg == win32con.WM_TIMER:
+            if wp == TIMER_SAMPLE:
+                self._adopt()
+                self._sample()
+            elif wp == TIMER_FADE:
+                self._fade_step()
+            elif wp == TIMER_SPLASH:
+                self._phase += 0.033 * 2.4
+                win32gui.InvalidateRect(hwnd, None, False)
+            elif wp == TIMER_KILL:
+                winapi.user32.KillTimer(hwnd, TIMER_KILL)
+                if self.proc and self.proc.poll() is None:
+                    self.proc.kill()
+                win32gui.DestroyWindow(hwnd)
+            return 0
+        if msg == win32con.WM_GETMINMAXINFO:
+            info = ctypes.cast(lp, ctypes.POINTER(winapi.MINMAXINFO)).contents
+            info.ptMinTrackSize.x = round(MIN_SIZE_DIP[0] * self.scale)
+            info.ptMinTrackSize.y = round(MIN_SIZE_DIP[1] * self.scale)
+            return 0
+        if msg == WM_DPICHANGED:
+            self.scale = (wp & 0xFFFF) / 96
+            self._icons.clear()
+            r = ctypes.cast(lp, ctypes.POINTER(wt.RECT)).contents
+            win32gui.SetWindowPos(hwnd, 0, r.left, r.top, r.right - r.left, r.bottom - r.top,
+                                  win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
+            return 0
+        if msg == WM_APP_EMBED:
+            self._embed(lp)
+            return 0
+        if msg == WM_APP_FAILED:
+            winapi.user32.KillTimer(hwnd, TIMER_SPLASH)
+            win32gui.InvalidateRect(hwnd, None, False)
+            return 0
+        if msg == WM_APP_EXITED:
+            if self.child or self.closing:
+                win32gui.DestroyWindow(hwnd)
+            else:  # scrcpy gave up before showing anything: say why, keep the window to read it
+                self.error = self.error or "The app couldn't start. See the logs folder."
+                winapi.user32.KillTimer(hwnd, TIMER_SPLASH)
+                win32gui.InvalidateRect(hwnd, None, False)
+            return 0
+        if msg == win32con.WM_CLOSE:
+            self._save_rect()
+            if self.proc and self.proc.poll() is None and self.child:
+                if not self.closing:
+                    self.closing = True
+                    win32gui.ShowWindow(hwnd, win32con.SW_HIDE)  # feels instant; scrcpy tidies up behind
+                    win32gui.PostMessage(self.child, win32con.WM_CLOSE, 0, 0)
+                    winapi.user32.SetTimer(hwnd, TIMER_KILL, 3000, None)
+                return 0
+            self.closing = True
+            if self.proc and self.proc.poll() is None:
+                self.proc.kill()
+            win32gui.DestroyWindow(hwnd)
+            return 0
+        if msg == win32con.WM_DESTROY:
+            for t in (TIMER_SAMPLE, TIMER_SPLASH, TIMER_FADE, TIMER_KILL):
+                winapi.user32.KillTimer(hwnd, t)
+            if self.proc and self.proc.poll() is None:
+                self.proc.kill()
+            self.manager.closed(self)
+            return 0
+        return win32gui.DefWindowProc(hwnd, msg, wp, lp)

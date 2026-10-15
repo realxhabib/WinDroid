@@ -1,0 +1,28 @@
+[project]
+name = "androiddesktop"
+version = "0.1.0"
+description = "Android apps as independent, frameless Windows windows, running in a headless Android VM."
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "pillow>=11",
+    "pywin32>=308",
+    "pywebview>=5.4",
+]
+
+[project.gui-scripts]
+androiddesktop = "androiddesktop.__main__:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["androiddesktop"]
+
+[tool.setuptools.package-data]
+androiddesktop = ["assets/*", "ui/*"]

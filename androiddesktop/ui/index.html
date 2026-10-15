@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Android Desktop</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="backdrop" aria-hidden="true">
+  <div class="glow g1"></div><div class="glow g2"></div><div class="glow g3"></div><div class="grain"></div>
+</div>
+
+<main class="shell">
+  <header class="titlebar pywebview-drag-region">
+    <div class="brand pywebview-drag-region">
+      <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+        <defs>
+          <linearGradient id="mk" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#5BF0A0"/><stop offset="1" stop-color="#2C8CFF"/>
+          </linearGradient>
+        </defs>
+        <rect width="32" height="32" rx="9" fill="url(#mk)"/>
+        <rect x="7.5" y="9" width="17" height="14" rx="3.2" fill="none" stroke="#fff" stroke-width="2"/>
+        <path d="M7.5 13.2h17" stroke="#fff" stroke-width="2"/>
+        <circle cx="10.6" cy="11.1" r=".9" fill="#fff"/><circle cx="13.2" cy="11.1" r=".9" fill="#fff"/>
+      </svg>
+      <div class="brand-text pywebview-drag-region">
+        <span class="name pywebview-drag-region">Android</span>
+        <span class="pill" id="status"><i></i><b>Off</b></span>
+      </div>
+    </div>
+    <div class="actions">
+      <button class="icon-btn" id="power" title="Start Android"><span class="glyph">&#xE7E8;</span></button>
+      <button class="icon-btn" id="minimize" title="Minimize"><span class="glyph">&#xE921;</span></button>
+      <button class="icon-btn close" id="close" title="Close"><span class="glyph">&#xE8BB;</span></button>
+    </div>
+  </header>
+
+  <section class="setup" id="setup" hidden>
+    <div class="setup-card">
+      <div class="setup-art" aria-hidden="true">
+        <span></span><span></span><span></span>
+      </div>
+      <h1>Android, right on your desktop</h1>
+      <p>Every Android app opens in its own window that you can move, snap and resize like any other.
+         Android runs quietly in the background, entirely on this PC.</p>
+      <ul class="facts">
+        <li><span class="glyph">&#xE896;</span>About 2.4 GB to download, once</li>
+        <li><span class="glyph">&#xEDA2;</span>Uses about 10 GB of disk</li>
+        <li><span class="glyph">&#xE72E;</span>Nothing leaves your PC</li>
+      </ul>
+      <button class="primary" id="setup-go">Set up Android</button>
+      <div class="progress" id="setup-progress" hidden>
+        <div class="bar"><div class="fill" id="setup-fill"></div></div>
+        <div class="progress-text" id="setup-text">Starting...</div>
+      </div>
+      <p class="error" id="setup-error" hidden></p>
+    </div>
+  </section>
+
+  <section class="home" id="home">
+    <label class="search">
+      <span class="glyph">&#xE721;</span>
+      <input id="search" type="text" placeholder="Search apps" autocomplete="off" spellcheck="false">
+      <kbd id="search-hint">Type to search</kbd>
+    </label>
+
+    <div class="section-head">
+      <h2 id="grid-title">All apps</h2>
+      <span class="count" id="count"></span>
+    </div>
+
+    <div class="grid-wrap" id="grid-wrap">
+      <div class="grid" id="grid"></div>
+      <div class="empty" id="empty" hidden>
+        <span class="glyph">&#xE721;</span>
+        <p>No apps match "<span id="empty-q"></span>"</p>
+        <button class="ghost" id="search-play">Search Google Play</button>
+      </div>
+    </div>
+  </section>
+
+  <footer class="dock" id="dock">
+    <button class="dock-btn" id="play"><img id="play-icon" alt=""><span>Get apps</span></button>
+    <button class="dock-btn" id="apk"><span class="glyph">&#xE7B8;</span><span>Install APK</span></button>
+    <span class="spacer"></span>
+    <button class="icon-btn" id="settings" title="Android settings"><span class="glyph">&#xE713;</span></button>
+  </footer>
+</main>
+
+<div class="menu" id="menu" hidden></div>
+<div class="toast" id="toast" hidden></div>
+
+<script src="app.js"></script>
+</body>
+</html>
