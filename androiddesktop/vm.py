@@ -20,7 +20,7 @@ import threading
 import time
 from typing import Callable
 
-from . import adb, checks
+from . import adb, checks, runtime
 from .log import log
 from .paths import AVD_HOME, AVD_NAME, EMULATOR_EXE, EMULATOR_PORT, LOGS, android_env
 
@@ -124,6 +124,11 @@ class VM:
             if self._proc and self._proc.poll() is None:  # ours, but adb lost it: start over
                 self._proc.kill()
             shutil.rmtree(AVD_HOME / f"{AVD_NAME}.avd" / "snapshots", ignore_errors=True)
+            try:
+                picked = runtime.configure_cameras()  # the webcams plugged in now
+                log(f"vm: cameras: front {picked.get('hw.camera.front')}, back {picked.get('hw.camera.back')}")
+            except Exception as e:
+                log(f"vm: cameras: {e!r}")
             LOGS.mkdir(parents=True, exist_ok=True)
             out = (LOGS / "emulator.log").open("w", encoding="utf-8", errors="replace")
             log("vm: starting the emulator")

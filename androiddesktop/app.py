@@ -32,7 +32,7 @@ import win32api  # noqa: E402
 import win32con  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from . import adb, checks, runtime, shortcuts  # noqa: E402
+from . import adb, biometrics, checks, hello, runtime, shortcuts  # noqa: E402
 from .catalog import Catalog  # noqa: E402
 from .log import log, log_uncaught  # noqa: E402
 from .manager import TRAY_OPEN, TRAY_QUIT, TRAY_STOP, WindowManager, send_to_agent  # noqa: E402
@@ -93,9 +93,20 @@ class Api:
     def recheck(self) -> None:
         self._agent.recheck()
 
-    def unlock(self, pin: str) -> str:
-        """"" once Android is unlocked, otherwise what to show under the PIN field."""
-        return self._agent.unlock(pin)
+    def unlock(self, pin: str, remember: bool | None = None) -> str:
+        """"" once Android is unlocked, otherwise what to show under the PIN field. remember: keep
+        the PIN (DPAPI-encrypted) to unlock with Windows Hello from now on (True), forget it (False),
+        or leave things as they are (None: the box wasn't shown)."""
+        return self._agent.unlock(pin, remember)
+
+    def unlock_hello(self) -> str:
+        return self._agent.unlock_hello(self._agent._hwnd())
+
+    def forget_pin(self) -> None:
+        self._agent.forget_pin()
+
+    def setup_fingerprint(self) -> None:
+        self._agent.setup_fingerprint()
 
     def search_play(self, query: str) -> None:
         q = "".join(c for c in query if c.isalnum() or c in " -_.")
@@ -108,6 +119,8 @@ class Agent:
         self.vm = VM()
         self.catalog = Catalog()
         self.manager = WindowManager(self.vm, self.catalog)
+        self.fingerprint = biometrics.Bridge(self.manager, self._label, self._hello_anchor)
+        self._hello_unlocking = threading.Lock()
         self.window: webview.Window | None = None
         self.loaded = False
         self.visible = show_launcher
@@ -127,8 +140,11 @@ class Agent:
         self.manager.on_request = self.handle
         self.manager.on_tray = self.tray
         self.manager.on_notice = self.notice
-        self.manager.on_unlock = self.show_launcher  # the launcher asks for the PIN
+        self.manager.on_unlock = self.unlock_requested
         self.manager.start()
+        self.fingerprint.listeners.append(lambda: self.push(apps=False))
+        self.fingerprint.on_notice = self.notice
+        self.fingerprint.start()
         self.vm.listeners.append(lambda s, d: self._on_vm(s))
         self.catalog.listeners.append(lambda: self.push(apps=True))
         self.manager.listeners.append(lambda: self.push(apps=True))
@@ -225,10 +241,79 @@ class Agent:
             return
         self.manager.open(package, intent)
 
-    def unlock(self, pin: str) -> str:
+    def unlock(self, pin: str, remember: bool | None = None) -> str:
+        was_locked = self.vm.state == LOCKED
+        if was_locked:
+            log(f"unlock: PIN entered in the launcher{' (remember: on)' if remember else ''}")
         message = self.vm.unlock(pin)
+        if was_locked and not message and self.vm.state == RUNNING:  # the PIN is right
+            if remember:
+                hello.remember_pin(pin)
+                log("unlock: PIN remembered for Windows Hello")
+            elif remember is False and hello.has_pin():
+                self.forget_pin()
         self.push(apps=False)
         return message
+
+    # ------------------------------------------------------------------ Windows Hello
+    def _label(self, package: str) -> str:
+        app = self.catalog.get(package)
+        return app.label if app else package
+
+    def _hello_anchor(self) -> int:
+        """A window of ours to show Windows Hello above when no app window is asking: the launcher
+        if it's open, else the app window the user was last in. 0 if none is on screen."""
+        if self.visible and self._hwnd():
+            return self._hwnd()
+        wins = [w for w in self.manager.windows.values() if not w.closing and w.hwnd]
+        win = next((w for w in wins if w.active), None) or (wins[0] if wins else None)
+        return win.hwnd if win else 0
+
+    def unlock_requested(self, win=None) -> None:
+        """An app window's Unlock button: Windows Hello above that window if the PIN is remembered,
+        else the launcher asks for the PIN."""
+        if hello.has_pin() and self.fingerprint.available and win is not None:
+            threading.Thread(target=self.unlock_hello, args=(win.hwnd,), daemon=True).start()
+        else:
+            self.show_launcher()
+
+    def unlock_hello(self, hwnd: int = 0) -> str:
+        """Unlock Android with the remembered PIN once Windows Hello confirms it's the user. Returns
+        what to show in the launcher ("" when unlocked, or nothing to say)."""
+        if self.vm.state != LOCKED or not self._hello_unlocking.acquire(blocking=False):
+            return ""
+        try:
+            pin = hello.remembered_pin()
+            if pin is None:
+                self.forget_pin()
+                return "Enter your PIN: the remembered one can't be read any more."
+            result = hello.verify(hwnd or self._hello_anchor(), "Unlock Android")
+            if result != hello.VERIFIED:
+                log(f"unlock: Windows Hello: {hello.RESULTS.get(result, result)}")
+                return "" if result == hello.CANCELED else f"Windows Hello didn't work ({hello.RESULTS.get(result, result)})."
+            message = self.vm.unlock(pin)
+            if "not the right PIN" in message:  # it was changed in Android
+                self.forget_pin()
+                message = "Android's PIN has changed. Enter the new one (and tick the box to use Windows Hello again)."
+            self.push(apps=False)
+            if message:
+                self.notice(message)
+            return message
+        finally:
+            self._hello_unlocking.release()
+
+    def forget_pin(self) -> None:
+        hello.forget_pin()
+        log("unlock: remembered PIN forgotten")
+        self.push(apps=False)
+
+    def setup_fingerprint(self) -> None:
+        """"Set up fingerprint": Android's own enrollment in Settings; we put the finger down for it."""
+        if self.vm.state != RUNNING:
+            self.toast("Start Android first" if self.vm.state != LOCKED else "Unlock Android first")
+            return
+        self.fingerprint.enroll()
+        self.open("com.android.settings", ["-a", "android.settings.FINGERPRINT_ENROLL"])
 
     def power(self) -> None:
         if self.vm.state in (RUNNING, LOCKED):
@@ -289,7 +374,9 @@ class Agent:
     def snapshot(self, apps: bool = True) -> dict:
         out: dict = {"vm": {"state": self.vm.state, "detail": self.vm.detail}, "setup": dict(self.setup_state),
                      "theme": "light" if winapi.light_theme() else "dark",
-                     "checks": [asdict(c) for c in self.checks if c.level != checks.OK]}
+                     "checks": [asdict(c) for c in self.checks if c.level != checks.OK],
+                     "hello": {"available": self.fingerprint.available, "enrolled": self.fingerprint.enrolled,
+                               "enrolling": self.fingerprint.enrolling, "remembered": hello.has_pin()}}
         if apps:
             running = set(self.manager.running())
             out["apps"] = [{"pkg": a.package, "label": a.label, "system": a.system, "icon": self._icon_uri(a.icon),
@@ -330,6 +417,16 @@ class Agent:
             threading.Thread(target=self.recheck, daemon=True).start()
         if vm_state == RUNNING:
             threading.Thread(target=self._now_running, daemon=True).start()
+        if changed and vm_state == LOCKED and hello.has_pin():
+            threading.Thread(target=self._auto_unlock, daemon=True, name="hello-unlock").start()
+
+    def _auto_unlock(self) -> None:
+        """Android started locked and the user chose to unlock it with Windows Hello: ask right away,
+        above the launcher or the app window waiting for Android. Not if nothing of ours is on
+        screen: a Windows Hello prompt out of nowhere would only puzzle."""
+        if not self._hello_anchor() or not hello.available():
+            return
+        self.unlock_hello()
 
     def _now_running(self) -> None:
         self._refresh_catalog()

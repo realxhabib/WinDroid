@@ -75,7 +75,7 @@ class WindowManager:
         self.accepting = True  # False once the agent starts quitting
         self.on_tray: Callable[[int], None] = lambda cmd: None
         self.on_notice: Callable[[str], None] = lambda text: log(text)  # something the user should hear about
-        self.on_unlock: Callable[[], None] = lambda: None  # a window's "Unlock" button
+        self.on_unlock: Callable[[AppWindow], None] = lambda win: None  # a window's "Unlock" button
         self.listeners: list[Callable[[], None]] = []
         self._calls: queue.Queue = queue.Queue()
         self._ready = threading.Event()

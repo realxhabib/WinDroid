@@ -615,7 +615,7 @@ class AppWindow:
         elif name == "retry":
             self.retry()
         elif name == "unlock":
-            self.manager.on_unlock()
+            self.manager.on_unlock(self)
         self._repaint_bar()
 
     def _set_hover(self, name: str | None) -> None:

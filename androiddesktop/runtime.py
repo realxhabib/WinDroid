@@ -6,14 +6,17 @@ scrcpy. Downloads are checksum-verified, extracted into DATA, and the zips remov
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
+import subprocess
 import urllib.request
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .paths import AVD_HOME, AVD_NAME, DATA, DOWNLOADS, SCRCPY_HOME, SDK
+from .adb import CREATE_NO_WINDOW
+from .paths import AVD_HOME, AVD_NAME, DATA, DOWNLOADS, EMULATOR_EXE, SCRCPY_HOME, SDK, android_env
 
 Progress = Callable[[str, float], None]  # (message, fraction 0..1 or -1 for indeterminate)
 
@@ -163,28 +166,78 @@ AVD_SETTINGS = {
     "hw.gpu.mode": "auto",
     "hw.audioInput": "yes",
     "hw.audioOutput": "yes",
-    "hw.camera.back": "none",
-    "hw.camera.front": "none",
+    # The PC's webcam, as both of Android's cameras. Re-picked before every start (cameras()), so
+    # a webcam that was unplugged or added is noticed, and a PC without one gets none.
+    "hw.camera.back": "webcam0",
+    "hw.camera.front": "webcam0",
     "hw.sdCard": "no",
     "fastboot.forceColdBoot": "yes",  # see vm.py: snapshots are off
     "showDeviceFrame": "no",
 }
 
 
-def create_avd() -> None:
-    d = avd_dir()
-    d.mkdir(parents=True, exist_ok=True)
+def _read_config() -> dict[str, str]:
     existing = {}
     if avd_config().exists():
         for line in avd_config().read_text(encoding="utf-8").splitlines():
             k, sep, v = line.partition("=")
             if sep:
                 existing[k.strip()] = v.strip()
+    return existing
+
+
+def _write_config(settings: dict[str, str]) -> None:
+    avd_config().write_text("".join(f"{k}={v}\n" for k, v in settings.items()), encoding="utf-8")
+
+
+def create_avd() -> None:
+    d = avd_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    existing = _read_config()
     existing.update(AVD_SETTINGS)
-    avd_config().write_text("".join(f"{k}={v}\n" for k, v in existing.items()), encoding="utf-8")
+    existing.update(cameras())
+    _write_config(existing)
     (AVD_HOME / f"{AVD_NAME}.ini").write_text(
         f"avd.ini.encoding=UTF-8\npath={d}\npath.rel=avd\\{d.name}\ntarget=android-{API_LEVEL}\n",
         encoding="utf-8")
+
+
+# ------------------------------------------------------------------ webcam
+def parse_webcams(listing: str) -> list[tuple[str, str]]:
+    """`emulator -webcam-list`: (name, label) of each webcam, e.g. ("MX Brio", "webcam0")."""
+    return re.findall(r"Camera '(.*)' can be specified by label as '(webcam\d+)'", listing)
+
+
+def pick_cameras(webcams: list[tuple[str, str]]) -> dict[str, str]:
+    """Both of Android's cameras show the PC's first webcam: on a PC every camera faces the user, and
+    apps that want the "back" camera (QR code scanners, say) then get the good one too. None if
+    there's no webcam: the emulator would fail to open one that isn't there."""
+    label = webcams[0][1] if webcams else "none"
+    return {"hw.camera.front": label, "hw.camera.back": label}
+
+
+def cameras() -> dict[str, str]:
+    """The camera settings for the webcams plugged in right now (none if we can't tell)."""
+    try:
+        out = subprocess.run([str(EMULATOR_EXE), "-webcam-list"], capture_output=True, text=True,
+                             encoding="utf-8", errors="replace", timeout=30, env=android_env(),
+                             creationflags=CREATE_NO_WINDOW).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        out = ""
+    return pick_cameras(parse_webcams(out))
+
+
+def configure_cameras() -> dict[str, str]:
+    """Before Android starts: point its cameras at the webcams there are now. Changes take effect
+    at the next start of Android, so this runs right before one."""
+    if not avd_config().exists():
+        return {}
+    settings = _read_config()
+    picked = cameras()
+    if any(settings.get(k) != v for k, v in picked.items()):
+        settings.update(picked)
+        _write_config(settings)
+    return picked
 
 
 def disk_usage() -> int:

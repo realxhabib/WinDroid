@@ -21,7 +21,9 @@ drag, snap, pin to the taskbar or maximize like any other Windows app.
 - **PC keyboard and mouse.** Android sees a hardware keyboard, so the on-screen keyboard stays out of
   the way. Right-click (or your mouse's back button) goes Back; Shift+right-click is a real
   right-click. Clipboard is shared both ways.
-- **Sound** plays through your PC.
+- **Sound** plays through your PC, and **the camera** is your PC's webcam.
+- **Windows Hello for Android's fingerprint.** When an Android app asks for your fingerprint,
+  Windows Hello asks instead, above that app's window: face, fingerprint reader or Windows PIN. Set it up once with **Set up fingerprint** in the launcher.
 - **Recovers by itself.** If an app's connection drops, or Android itself crashes, its window shows
   "Reconnecting..." and brings the app back (starting Android again if needed) instead of vanishing.
 
@@ -60,6 +62,24 @@ If you set a screen-lock PIN or password in Android (Google Play may ask for one
 PIN is entered. The launcher then asks for it, and apps you open wait with an **Unlock** button. Wrong
 tries count towards Android's own lockout. To stop this, remove the screen lock in Android's
 **Settings > Security > Screen lock**.
+
+To skip typing the PIN, tick **Unlock with Windows Hello from now on** under the PIN field (shown when
+Windows Hello is set up on the PC). Android Desktop then keeps the PIN, encrypted with DPAPI for your
+Windows account (`%LOCALAPPDATA%\AndroidDesktop\android-pin.bin`), and after each start of Android
+asks Windows Hello instead, above the launcher or the app window that's waiting. Untick the box
+the next time Android asks for its PIN to forget it. If the PIN changes in Android, it's forgotten
+and asked for again. DPAPI keeps it from other Windows users and from copies of the file, not from
+programs running as you; Windows Hello is what stands between them and Android. The PIN never goes
+into a log.
+
+### Windows Hello for Android's fingerprint
+
+Android here has a (virtual) fingerprint sensor. Click **Set up fingerprint** in the launcher (shown
+until a fingerprint is added, if Windows Hello is set up on the PC): Android's Settings opens at
+**Add fingerprint**, asks for your Android PIN, and Android Desktop touches the sensor each time
+Android asks. From then on, whenever Android waits for a fingerprint, Windows Hello asks you instead,
+above the window of the app that's asking, and touches the sensor once it's you. Canceling Windows
+Hello leaves the finger off.
 
 ### Command line
 
@@ -116,6 +136,21 @@ Launcher (WebView2)      App window (Win32, frameless)      App window ...
   `am get-started-user-state 0` tell whether the user is still locked ("direct boot"). Locked, the VM
   reports `locked`, the app list isn't refreshed (Android lists only its direct-boot apps then), and
   the PIN from the launcher goes to `locksettings verify`, which unlocks the user's storage.
+- **Camera** (`runtime.py`): before every start of Android, `emulator -webcam-list` tells which
+  webcams are plugged in, and both of Android's cameras (`hw.camera.front`, `hw.camera.back` in the
+  AVD's `config.ini`) are set to the first one by label (`webcam0`), or to `none` without one. On a PC
+  every camera faces you, so apps that pick the "back" camera (QR code scanners) get the good one too.
+- **Windows Hello** (`biometrics.py`, `hello.py`): the emulator's console puts a finger on Android's
+  virtual sensor (`adb emu finger touch 1`). Android's `BiometricScheduler` runs one client at a time,
+  shown in `dumpsys fingerprint` as its "Current operation" with the package that asked (an
+  authentication for a BiometricPrompt, the lock screen, Play or a passkey; an enrollment for
+  Settings). Lines from Android's biometric services in logcat say when to look again. When an
+  authentication is waiting, the app's window is found through `cmd activity stack list` (the
+  display where that package is on top), and Windows Hello asks above it: WinRT's
+  `UserConsentVerifier` through `IUserConsentVerifierInterop.RequestVerificationForWindowAsync`,
+  called with plain ctypes. Verified, the finger goes down; if the prompt goes away first, so does
+  the Windows Hello prompt. During **Set up fingerprint**, enrollment clients get the finger
+  without Windows Hello: Android asked for its PIN already.
 - **PC checks** (`checks.py`): Windows Hypervisor Platform (asked directly through `WinHvPlatform.dll`,
   and through `emulator -accel-check` once installed), memory and disk space.
 - **App catalog** (`catalog.py` and `helper/src/AppCatalog.java`): a small helper, run inside
@@ -131,7 +166,8 @@ app window under `windows\`). Uncaught errors from any thread are logged too, wi
 ## Development
 
 - `python -m unittest` runs the unit tests (no Android needed): PC checks, VM crash detection, and
-  parsing what Android and scrcpy report.
+  parsing what Android and scrcpy report, including the fingerprint prompts the Windows Hello bridge
+  reacts to and what it does about them.
 - `python tools/smoke_test.py [package]` checks app windows end to end against the real Android: the
   app opens and draws, follows a resize, comes back after scrcpy is killed, and cleans up on close.
   Its windows live in its own process, so it tests your working copy even while the agent runs. It
@@ -149,7 +185,17 @@ app window under `windows\`). Uncaught errors from any thread are logged too, wi
 - Video is encoded in software inside the VM, so very large windows of fast-moving games cost CPU.
 - Android always cold-boots (about 30 s). Quick-boot snapshots would be faster, but restoring them
   headless proved unreliable.
-- No camera (the AVD has none configured); the microphone is the PC's default.
+- The camera and microphone are the PC's: the first webcam the emulator lists, and the default
+  microphone. A webcam plugged in or out is noticed at the next start of Android, not while it runs.
+- After a start, unlocking from the launcher (PIN or Windows Hello) unlocks Android's storage, but
+  Android's own lock screen stays up on its main display, which no window shows. Android then
+  treats the PIN as not entered yet. So Android's own "confirm it's you" screens (Settings) ask for
+  the PIN instead of a fingerprint, and the lock screen never asks for a fingerprint. Apps' own
+  fingerprint prompts (BiometricPrompt) aren't affected; Google's passkeys and Play purchases
+  haven't been tried yet.
+- Android draws an app's fingerprint dialog behind that lock screen, so it's never shown and can't be
+  canceled from the PC. If you cancel Windows Hello, the app keeps waiting until it gives up or another
+  app comes to the front (Android then cancels it), or until it asks again.
 - Notifications stay inside Android for now.
 - Protected (`FLAG_SECURE`) screens update a few times a second instead of at full speed, and typing
   on them is limited to plain ASCII text. If one can't be moved to a secure display, the window says

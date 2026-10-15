@@ -71,9 +71,22 @@
           <input id="pin" type="password" placeholder="PIN or password" maxlength="64" spellcheck="false" autocomplete="off">
           <button class="primary small" id="unlock-go" type="submit">Unlock</button>
         </div>
+        <button class="ghost hello-btn" id="unlock-hello" type="button" hidden><span class="glyph">&#xE928;</span>Unlock with Windows Hello</button>
+        <label class="remember" id="remember-row" hidden title="Your PIN is kept encrypted for your Windows account">
+          <input type="checkbox" id="remember"><span>Unlock with Windows Hello from now on</span>
+        </label>
         <p class="unlock-error" id="unlock-error" hidden></p>
       </div>
     </form>
+    <div class="notice hello" id="hello" hidden>
+      <span class="glyph">&#xE928;</span>
+      <div class="notice-text">
+        <b id="hello-title">Use Windows Hello in Android</b>
+        <p id="hello-detail"></p>
+        <div class="notice-actions"><button class="ghost" id="hello-go">Set up fingerprint</button></div>
+      </div>
+      <button class="icon-btn dismiss" id="hello-dismiss" title="Not now"><span class="glyph">&#xE711;</span></button>
+    </div>
     <label class="search">
       <span class="glyph">&#xE721;</span>
       <input id="search" type="text" placeholder="Search apps" autocomplete="off" spellcheck="false">

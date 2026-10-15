@@ -123,17 +123,32 @@ function renderNotices() {
   }
 }
 
-// Android boots locked when a screen-lock PIN is set in it: ask for the PIN here.
+// Android boots locked when a screen-lock PIN is set in it: ask for the PIN here (or, if the user
+// chose so, unlock with Windows Hello and the PIN remembered for them).
 let wasLocked = false;
 function renderUnlock() {
   const locked = state.vm.state === "locked" && !!state.setup.installed;
+  const hello = state.hello || {};
   $("unlock").hidden = !locked;
+  $("unlock-hello").hidden = !(hello.available && hello.remembered);
+  $("remember-row").hidden = !hello.available;
   if (locked && !wasLocked) {
     $("pin").value = "";
+    $("remember").checked = !!hello.remembered;
     $("unlock-error").hidden = true;
     setTimeout(() => $("pin").focus(), 60);
   }
   wasLocked = locked;
+}
+
+function showUnlockError(message) {
+  $("unlock-error").textContent = message || "";
+  $("unlock-error").hidden = !message;
+  if (message) {
+    const card = $("unlock");
+    card.classList.remove("shake"); void card.offsetWidth; card.classList.add("shake");
+    $("pin").focus();
+  }
 }
 
 $("unlock").addEventListener("submit", async (e) => {
@@ -144,19 +159,48 @@ $("unlock").addEventListener("submit", async (e) => {
   go.disabled = true;
   go.textContent = "Unlocking...";
   try {
-    const message = await api().unlock(pin);
+    // null: the box isn't shown (no Windows Hello right now), so leave a remembered PIN alone.
+    const message = await api().unlock(pin, $("remember-row").hidden ? null : $("remember").checked);
     $("pin").value = "";
-    $("unlock-error").textContent = message || "";
-    $("unlock-error").hidden = !message;
-    if (message) {
-      const card = $("unlock");
-      card.classList.remove("shake"); void card.offsetWidth; card.classList.add("shake");
-      $("pin").focus();
-    }
+    showUnlockError(message);
   } finally {
     go.disabled = false;
     go.textContent = "Unlock";
   }
+});
+
+$("unlock-hello").addEventListener("click", async () => {
+  const b = $("unlock-hello");
+  b.disabled = true;
+  try { showUnlockError(await api().unlock_hello()); } finally { b.disabled = false; }
+});
+
+// Unticking forgets the remembered PIN at once.
+$("remember").addEventListener("change", (e) => {
+  if (!e.target.checked && state.hello && state.hello.remembered) {
+    api().forget_pin();
+    toast("Your PIN is no longer remembered");
+  }
+});
+
+// Windows Hello for Android's fingerprint prompts: set up once by adding a fingerprint in Android.
+const helloKey = "hello-card-dismissed";
+function helloDismissed() { try { return localStorage.getItem(helloKey) === "1"; } catch { return false; } }
+function renderHello() {
+  const h = state.hello || {};
+  const show = h.available && state.vm.state === "running" && (h.enrolling || (h.enrolled === 0 && !helloDismissed()));
+  $("hello").hidden = !show;
+  if (!show) return;
+  $("hello-title").textContent = h.enrolling ? "Adding a fingerprint" : "Use Windows Hello in Android";
+  $("hello-detail").textContent = h.enrolling
+    ? "Follow the steps in Android's Settings: confirm your Android PIN, then Android Desktop touches the fingerprint sensor for you."
+    : "When an Android app asks for your fingerprint, confirm with Windows Hello instead. Add a fingerprint to Android once to set it up.";
+  $("hello-go").textContent = h.enrolling ? "Open Settings" : "Set up fingerprint";
+}
+$("hello-go").addEventListener("click", () => api().setup_fingerprint());
+$("hello-dismiss").addEventListener("click", () => {
+  try { localStorage.setItem(helloKey, "1"); } catch {}
+  $("hello").hidden = true;
 });
 
 // Called from Python with the latest state.
@@ -169,6 +213,7 @@ window.ui = {
     renderSetup();
     renderNotices();
     renderUnlock();
+    renderHello();
     renderGrid();
   },
   toast,
