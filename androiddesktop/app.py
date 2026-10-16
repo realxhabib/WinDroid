@@ -1,13 +1,17 @@
-"""Android Desktop: Android apps as independent Windows windows, backed by a headless Android VM.
+"""WinDroid: Android apps as independent Windows windows, backed by a headless Android VM.
 
     pythonw -m androiddesktop                  # the launcher
     pythonw -m androiddesktop open <package>   # open one app in its own window (Start menu shortcuts)
     pythonw -m androiddesktop boot             # start Android, nothing shown (for an AI agent's apps)
     pythonw -m androiddesktop stop             # close every app and shut Android down
-    pythonw -m androiddesktop quit             # ...and exit Android Desktop entirely
+    pythonw -m androiddesktop quit             # ...and exit WinDroid entirely (returns once it has)
     python  -m androiddesktop setup            # download and install the Android runtime (console)
     python  -m androiddesktop doctor           # check whether this PC can run Android
     python  -m androiddesktop mcp              # the MCP server for AI agents (mcp.py)
+    pythonw -m androiddesktop uninstall        # the uninstaller's: quit, remove the app shortcuts we made
+
+Installed, WinDroid.exe takes the place of pythonw -m androiddesktop and windroid-cli.exe that of
+python -m androiddesktop (see packaging/).
 
 One agent process owns everything: the VM, the app windows, the tray icon and the launcher. Later
 invocations hand their request to it and exit.
@@ -16,12 +20,17 @@ from __future__ import annotations
 
 import base64
 import ctypes
+import hashlib
 import io
 import json
 import os
+import shutil
+import socket
+import subprocess
 import sys
 import threading
 import time
+import zlib
 from dataclasses import asdict
 from pathlib import Path
 
@@ -34,16 +43,44 @@ import win32api  # noqa: E402
 import win32con  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from . import adb, biometrics, checks, ghost, hello, runtime, shortcuts  # noqa: E402
+from . import adb, biometrics, checks, ghost, hello, runtime, shortcuts, state, update  # noqa: E402
 from .catalog import Catalog  # noqa: E402
 from .log import log, log_uncaught  # noqa: E402
-from .manager import TRAY_OPEN, TRAY_QUIT, TRAY_STOP, WindowManager, send_to_agent  # noqa: E402
+from .manager import TRAY_OPEN, TRAY_QUIT, TRAY_STOP, WindowManager, agent_running, send_to_agent  # noqa: E402
 from .paths import DATA, INSTANCE  # noqa: E402
 from .vm import LOCKED, OFF, RUNNING, VM  # noqa: E402
 
 UI = Path(__file__).with_name("ui") / "index.html"
+WEBVIEW = DATA / "webview"
+# pywebview serves ui/ at http://127.0.0.1:<port>/. Its default port, 42001, is every pywebview app's, and
+# whichever app has it serves its pages to the others; so one of our own, the same every time (the
+# launcher's localStorage belongs to the address).
+UI_PORT = 42617
 IDLE_SHUTDOWN_MINUTES = 10
 LAUNCHER_SIZE = (460, 680)
+
+
+def ui_port() -> int:
+    """Our port (another instance of ours gets another), or any free one if something else has it."""
+    preferred = UI_PORT + (zlib.crc32(INSTANCE.encode()) % 1000 + 1 if INSTANCE else 0)
+    for port in (preferred, 0):
+        with socket.socket() as s:
+            try:
+                s.bind(("127.0.0.1", port))
+                return s.getsockname()[1]
+            except OSError:
+                continue
+    return preferred
+
+
+def forget_old_ui() -> None:
+    """WebView2 keeps the launcher's page in its cache and may show it again without asking for it,
+    which after an update would be the old launcher. So the cache goes whenever ui/ has changed."""
+    stamp = hashlib.sha256(b"".join(f.read_bytes() for f in sorted(UI.parent.iterdir()) if f.is_file())).hexdigest()
+    if state.get("ui") != stamp:
+        for cache in ("Cache", "Code Cache"):
+            shutil.rmtree(WEBVIEW / "EBWebView" / "Default" / cache, ignore_errors=True)
+        state.put("ui", stamp)
 
 
 class Api:
@@ -114,6 +151,14 @@ class Api:
         q = "".join(c for c in query if c.isalnum() or c in " -_.")
         self._agent.open("com.android.vending", ["-a", "android.intent.action.VIEW", "-d", f"market://search?q={q}"])
 
+    def update(self) -> None:
+        self._agent.updater.install()
+
+    def update_notes(self) -> None:
+        release = self._agent.updater.release
+        if release and release.page.startswith(f"https://github.com/{update.REPO}/"):
+            os.startfile(release.page)
+
 
 class Agent:
     def __init__(self, show_launcher: bool) -> None:
@@ -122,6 +167,8 @@ class Agent:
         self.catalog = Catalog()
         self.manager = WindowManager(self.vm, self.catalog)
         self.fingerprint = biometrics.Bridge(self.manager, self._label, self._hello_anchor)
+        self.updater = update.Updater(winapi.FROZEN, on_change=lambda: self.push(apps=False),
+                                      on_ready=lambda: threading.Thread(target=self.quit, daemon=True).start())
         self._hello_unlocking = threading.Lock()
         self.window: webview.Window | None = None
         self.loaded = False
@@ -151,18 +198,20 @@ class Agent:
         self.catalog.listeners.append(lambda: self.push(apps=True))
         self.manager.listeners.append(lambda: self.push(apps=True))
         self.window = webview.create_window(
-            "Android Desktop", url=str(UI), js_api=Api(self), width=LAUNCHER_SIZE[0], height=LAUNCHER_SIZE[1],
+            "WinDroid", url=str(UI), js_api=Api(self), width=LAUNCHER_SIZE[0], height=LAUNCHER_SIZE[1],
             frameless=True, easy_drag=False, resizable=False, hidden=not self.visible,
             background_color="#f3f5f9" if winapi.light_theme() else "#0b0d11")
         self.window.events.loaded += self._on_loaded
         self.window.events.shown += self._style_window
         self.window.events.closing += self._on_closing
         threading.Thread(target=self._background, args=(first_request,), daemon=True, name="startup").start()
-        webview.start(gui="edgechromium", private_mode=False, storage_path=str(DATA / "webview"))
+        forget_old_ui()
+        webview.start(gui="edgechromium", private_mode=False, storage_path=str(WEBVIEW), http_port=ui_port())
         os._exit(0)
 
     def _background(self, first_request: dict) -> None:
         self.recheck()
+        threading.Thread(target=self.updater.check, daemon=True, name="update-check").start()
         if self.setup_state["installed"]:
             try:
                 shortcuts.ensure_launcher_shortcut()
@@ -188,7 +237,7 @@ class Agent:
             winapi.user32.SetWindowPos(hwnd, 0, left + (right - left - w) // 2, top + (bottom - top - h) // 2,
                                        w, h, 0x0014)  # SWP_NOZORDER | SWP_NOACTIVATE
             winapi.dwm_int(hwnd, winapi.DWMWA_WINDOW_CORNER_PREFERENCE, winapi.DWMWCP_ROUND)
-            winapi.set_app_identity(hwnd, shortcuts.LAUNCHER_ID, "Android Desktop", "-m androiddesktop")
+            winapi.set_app_identity(hwnd, shortcuts.LAUNCHER_ID, "WinDroid", [])
             winapi.set_window_icon(hwnd, shortcuts.MAIN_ICON, winapi.dpi_of(hwnd))
 
     def _hwnd(self) -> int:
@@ -378,7 +427,7 @@ class Agent:
 
     def snapshot(self, apps: bool = True) -> dict:
         out: dict = {"vm": {"state": self.vm.state, "detail": self.vm.detail}, "setup": dict(self.setup_state),
-                     "theme": "light" if winapi.light_theme() else "dark",
+                     "theme": "light" if winapi.light_theme() else "dark", "update": self.updater.snapshot(),
                      "checks": [asdict(c) for c in self.checks if c.level != checks.OK],
                      "hello": {"available": self.fingerprint.available, "enrolled": self.fingerprint.enrolled,
                                "enrolling": self.fingerprint.enrolling, "remembered": hello.has_pin()}}
@@ -559,12 +608,15 @@ class Agent:
     # ------------------------------------------------------------------ housekeeping
     def _housekeeping(self) -> None:
         """Keep the app list fresh (Play Store installs) and power Android down when nobody needs it."""
-        last_refresh = time.monotonic()
+        last_refresh = last_update_check = time.monotonic()
         while not self.quitting:
             time.sleep(5)
             if self.vm.state in (RUNNING, LOCKED):
                 self.vm.refresh()  # notices an emulator that died (or was unlocked in its own window)
-            busy = bool(self.manager.windows) or self.visible
+            if time.monotonic() - last_update_check > 3600:  # it asks GitHub once a day at most
+                last_update_check = time.monotonic()
+                self.updater.check()
+            busy = bool(self.manager.windows) or self.visible or self.updater.status == update.DOWNLOADING
             if busy:
                 self._idle_since = time.monotonic()
             if self.vm.state == RUNNING and time.monotonic() - last_refresh > 45:
@@ -589,6 +641,13 @@ class Agent:
             return False
 
 
+def wait_for_agent_exit(timeout: float = 180) -> None:
+    """After a quit request: Android shuts down cleanly first, which takes up to about a minute."""
+    end = time.monotonic() + timeout
+    while agent_running() and time.monotonic() < end:
+        time.sleep(0.25)
+
+
 def main() -> None:
     args = sys.argv[1:]
     command = args[0] if args else ""
@@ -606,6 +665,12 @@ def main() -> None:
               f"{', LOCKED: enter your PIN in the launcher to unlock it' if locked else ''}")
         print(checks.report(installed, running))
         return
+    if command == "uninstall":  # the uninstaller's: WinDroid must be gone before its files can go
+        send_to_agent({"quit": True})
+        wait_for_agent_exit()
+        for lnk in shortcuts.remove_ours():
+            log(f"uninstall: removed {lnk}")
+        return
     if command == "open" and len(args) > 1:
         request = {"open": args[1]}
         if len(args) > 3 and args[2] == "--adopt" and args[3].isdigit():
@@ -614,9 +679,17 @@ def main() -> None:
         request = {command: True}
     else:
         request = {"show": True}
-    if send_to_agent(request):
+    sent = send_to_agent(request)
+    if command == "quit":
+        # The installer counts on WinDroid being gone when this returns. An agent that's quitting already
+        # (the auto-updater's, once the installer is running) takes no more requests: wait for it too.
+        wait_for_agent_exit()
+    if sent or command in ("stop", "quit"):
         return
-    if command in ("stop", "quit"):
+    if winapi.console_exe():  # windroid-cli.exe: the agent belongs in WinDroid.exe, which has no console
+        ctypes.windll.user32.AllowSetForegroundWindow(-1)  # ASFW_ANY: let it bring the launcher forward
+        subprocess.Popen(winapi.command(*args), close_fds=True,
+                         creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
         return
     # One agent at a time. The running agent owns this mutex; if one is still starting up (or shutting
     # Android down), hand it the request once it answers, or wait for it to exit and take over.

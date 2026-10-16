@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Android Desktop</title>
+<title>WinDroid</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -61,6 +61,19 @@
   </section>
 
   <section class="home" id="home">
+    <div class="notice update" id="update" hidden>
+      <span class="glyph">&#xE896;</span>
+      <div class="notice-text">
+        <b id="update-title"></b>
+        <p id="update-detail"></p>
+        <div class="bar" id="update-bar" hidden><div class="fill" id="update-fill"></div></div>
+        <div class="notice-actions" id="update-actions">
+          <button class="ghost" id="update-go">Update</button>
+          <button class="ghost quiet" id="update-notes">What's new</button>
+        </div>
+      </div>
+      <button class="icon-btn dismiss" id="update-later" title="Later"><span class="glyph">&#xE711;</span></button>
+    </div>
     <div class="notices" id="notices"></div>
     <form class="unlock" id="unlock" hidden autocomplete="off">
       <span class="unlock-icon glyph">&#xE72E;</span>

@@ -5,7 +5,7 @@
 1. Start Clock hidden (start_session), with no window anywhere on the PC.
 2. Go to the Timer tab, enter 10 minutes, start the timer: all by element ids from read_screen.
 3. Read the time remaining back, and check no window appeared on the PC the whole time.
-4. show_to_user: Clock moves into a normal Android Desktop window, its timer still running.
+4. show_to_user: Clock moves into a normal WinDroid window, its timer still running.
 5. end_session; the window stays with the user (closed again at the end unless --keep).
 
 It speaks MCP over the server's stdin/stdout (python -m androiddesktop mcp), so it tests the server,
@@ -101,7 +101,7 @@ def find(screen: dict, label: str) -> dict:
 
 
 def app_windows() -> list[str]:
-    """Visible top-level windows of Android Desktop's apps and of scrcpy."""
+    """Visible top-level windows of WinDroid's apps and of scrcpy."""
     found = []
 
     def visit(hwnd: int, _: object) -> bool:

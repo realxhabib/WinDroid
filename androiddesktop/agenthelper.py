@@ -1,7 +1,7 @@
 """Talks to helper/src/AgentHelper.java: one long-lived process inside Android, one JSON line each way.
 
 The helper jar is the same as catalog.py's (assets/appcatalog.jar), pushed to a path of its own so an
-agent running another version of Android Desktop, which pushes its own jar to the catalog's path, can't
+agent running another version of WinDroid, which pushes its own jar to the catalog's path, can't
 swap it out under a running helper.
 """
 from __future__ import annotations

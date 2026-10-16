@@ -1,7 +1,7 @@
 [project]
 name = "androiddesktop"
-version = "0.1.0"
-description = "Android apps as independent, frameless Windows windows, running in a headless Android VM."
+dynamic = ["version"]
+description = "WinDroid: Android apps as independent, frameless Windows windows, running in a headless Android VM."
 readme = "README.md"
 requires-python = ">=3.11"
 classifiers = [
@@ -23,6 +23,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["androiddesktop"]
+
+[tool.setuptools.dynamic]
+version = {attr = "androiddesktop.__version__"}  # the one place it's set; a release's tag must match it
 
 [tool.setuptools.package-data]
 androiddesktop = ["assets/*", "ui/*"]

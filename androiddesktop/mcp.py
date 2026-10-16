@@ -22,7 +22,7 @@ from .log import agent_log
 PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05")
 
 INSTRUCTIONS = """\
-Android apps for you to use, from Android Desktop (a headless Android VM on this PC).
+Android apps for you to use, from WinDroid (a headless Android VM on this PC).
 
 start_session runs an app hidden: on its own display, with no window, so the user's screen doesn't \
 change. read_screen gives you its accessibility tree; tap, type_text, press and scroll operate it, \
@@ -39,7 +39,7 @@ ELEMENT = {"type": "integer", "description": "An element id from the last read_s
 
 TOOLS = [
     {"name": "list_apps",
-     "description": "List the Android apps installed in Android Desktop: label and package.",
+     "description": "List the Android apps installed in WinDroid: label and package.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "start_session",
      "description": "Start an Android app for you to use and return a session id for the other tools. By "
@@ -137,7 +137,7 @@ class Server:
                 asked = (message.get("params") or {}).get("protocolVersion")
                 result = {"protocolVersion": asked if asked in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0],
                           "capabilities": {"tools": {"listChanged": False}},
-                          "serverInfo": {"name": "androiddesktop", "version": __version__},
+                          "serverInfo": {"name": "androiddesktop", "title": "WinDroid", "version": __version__},
                           "instructions": INSTRUCTIONS}
             elif method == "ping":
                 result = {}
@@ -216,7 +216,7 @@ def required(args: dict, key: str):
 def main() -> None:
     out = sys.stdout.buffer
     sys.stdout = sys.stderr  # a stray print must not land in the protocol
-    agent_log(f"MCP server started (Android Desktop {__version__})")
+    agent_log(f"MCP server started (WinDroid {__version__})")
     server = Server()
     try:
         for raw in sys.stdin.buffer:
