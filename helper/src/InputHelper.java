@@ -25,12 +25,14 @@ import java.nio.charset.StandardCharsets;
  *   key <display> <action 0=down 1=up> <keycode> <repeat> <metaState>
  *   text <display> <hex UTF-8>                     typed via the virtual keyboard's key map
  *   scroll <display> <x> <y> <vscroll> <hscroll>   a mouse wheel turn at x, y (1.0 = one notch)
+ *   hover <display> <x> <y>                        the mouse pointer moved there (no button down)
+ *   leave <display> <x> <y>                        ...and left the window
  *   ime <display>                                  the on-screen keyboard, if any, shows on that display
  *
  * Prints "ready <version>" once it can inject.
  */
 public final class InputHelper {
-    static final int VERSION = 1;
+    static final int VERSION = 3;
     static final int INJECT_ASYNC = 0;
 
     static Object inputManager;
@@ -91,21 +93,19 @@ public final class InputHelper {
                 break;
             }
             case "scroll": {
-                long now = SystemClock.uptimeMillis();
-                MotionEvent.PointerProperties[] props = {new MotionEvent.PointerProperties()};
-                props[0].id = 0;
-                props[0].toolType = MotionEvent.TOOL_TYPE_MOUSE;
-                MotionEvent.PointerCoords[] coords = {new MotionEvent.PointerCoords()};
-                coords[0].x = Float.parseFloat(a[2]);
-                coords[0].y = Float.parseFloat(a[3]);
-                coords[0].setAxisValue(MotionEvent.AXIS_VSCROLL, Float.parseFloat(a[4]));
-                coords[0].setAxisValue(MotionEvent.AXIS_HSCROLL, Float.parseFloat(a[5]));
-                MotionEvent e = MotionEvent.obtain(now, now, MotionEvent.ACTION_SCROLL, 1, props, coords, 0, 0, 1f, 1f,
-                        0, 0, InputDevice.SOURCE_MOUSE, 0);
-                send(e, Integer.parseInt(a[1]));
-                e.recycle();
+                // The pointer moves there first, as a real mouse's does: Android drops a wheel turn
+                // from a pointer it hasn't seen over that display yet.
+                int display = Integer.parseInt(a[1]);
+                float x = Float.parseFloat(a[2]), y = Float.parseFloat(a[3]);
+                mouse(display, MotionEvent.ACTION_HOVER_MOVE, x, y, 0, 0);
+                mouse(display, MotionEvent.ACTION_SCROLL, x, y, Float.parseFloat(a[4]), Float.parseFloat(a[5]));
                 break;
             }
+            case "hover":
+            case "leave":
+                mouse(Integer.parseInt(a[1]), a[0].equals("hover") ? MotionEvent.ACTION_HOVER_MOVE
+                        : MotionEvent.ACTION_HOVER_EXIT, Float.parseFloat(a[2]), Float.parseFloat(a[3]), 0, 0);
+                break;
             case "ime": {
                 // IWindowManager.setDisplayImePolicy(display, DISPLAY_IME_POLICY_LOCAL), as scrcpy does.
                 IBinder binder = (IBinder) Class.forName("android.os.ServiceManager").getMethod("getService", String.class)
@@ -118,6 +118,22 @@ public final class InputHelper {
             default:
                 System.err.println("InputHelper: unknown command " + a[0]);
         }
+    }
+
+    static void mouse(int display, int action, float x, float y, float vscroll, float hscroll) throws Exception {
+        long now = SystemClock.uptimeMillis();
+        MotionEvent.PointerProperties[] props = {new MotionEvent.PointerProperties()};
+        props[0].id = 0;
+        props[0].toolType = MotionEvent.TOOL_TYPE_MOUSE;
+        MotionEvent.PointerCoords[] coords = {new MotionEvent.PointerCoords()};
+        coords[0].x = x;
+        coords[0].y = y;
+        coords[0].setAxisValue(MotionEvent.AXIS_VSCROLL, vscroll);
+        coords[0].setAxisValue(MotionEvent.AXIS_HSCROLL, hscroll);
+        MotionEvent e = MotionEvent.obtain(now, now, action, 1, props, coords, 0, 0, 1f, 1f, 0, 0,
+                InputDevice.SOURCE_MOUSE, 0);
+        send(e, display);
+        e.recycle();
     }
 
     static void send(InputEvent e, int display) throws Exception {

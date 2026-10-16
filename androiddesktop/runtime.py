@@ -5,7 +5,9 @@ scrcpy. Downloads are checksum-verified, extracted into DATA, and the zips remov
 """
 from __future__ import annotations
 
+import ctypes
 import hashlib
+import os
 import re
 import shutil
 import subprocess
@@ -143,8 +145,7 @@ AVD_SETTINGS = {
     "avd.ini.displayname": "Android Desktop",
     "abi.type": "x86_64",
     "hw.cpu.arch": "x86_64",
-    "hw.cpu.ncore": "4",
-    "hw.ramSize": "4096M",
+    # Cores and memory (hw.cpu.ncore, hw.ramSize): vm_size(), for the PC, before every start.
     "vm.heapSize": "512M",
     "disk.dataPartition.size": "8G",
     "image.sysdir.1": str(IMAGE_REL) + "\\",
@@ -195,11 +196,58 @@ def create_avd() -> None:
     d.mkdir(parents=True, exist_ok=True)
     existing = _read_config()
     existing.update(AVD_SETTINGS)
+    existing.update(vm_size())
     existing.update(cameras())
     _write_config(existing)
     (AVD_HOME / f"{AVD_NAME}.ini").write_text(
         f"avd.ini.encoding=UTF-8\npath={d}\npath.rel=avd\\{d.name}\ntarget=android-{API_LEVEL}\n",
         encoding="utf-8")
+
+
+# ------------------------------------------------------------------ size
+MAX_CORES = 6  # "Emulator does not support more than 6 cores" (emulator 37)
+
+
+def pick_vm_size(ram_mb: int, threads: int) -> dict[str, str]:
+    """Cores and memory for Android, from the PC's. With 8 GB Android keeps a dozen apps in memory
+    without killing any; with 4 it swaps and kills (measured with 14 apps: 735 MB swapped and one
+    app killed at 4 GB, 292 MB swapped and none at 8). Six cores start apps a little faster than four.
+    A PC with less to spare keeps more for Windows; never less than the 4 cores and 4 GB of before."""
+    ram = 8192 if ram_mb >= 24 * 1024 else 6144 if ram_mb >= 14 * 1024 else 4096
+    cores = min(MAX_CORES, max(4, threads // 2))
+    return {"hw.cpu.ncore": str(cores), "hw.ramSize": f"{ram}M"}
+
+
+class _MemoryStatus(ctypes.Structure):
+    _fields_ = [("dwLength", ctypes.c_ulong), ("dwMemoryLoad", ctypes.c_ulong), ("ullTotalPhys", ctypes.c_ulonglong),
+                ("ullAvailPhys", ctypes.c_ulonglong), ("ullTotalPageFile", ctypes.c_ulonglong),
+                ("ullAvailPageFile", ctypes.c_ulonglong), ("ullTotalVirtual", ctypes.c_ulonglong),
+                ("ullAvailVirtual", ctypes.c_ulonglong), ("ullAvailExtendedVirtual", ctypes.c_ulonglong)]
+
+
+def vm_size() -> dict[str, str]:
+    status = _MemoryStatus(dwLength=ctypes.sizeof(_MemoryStatus))
+    ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status))
+    return pick_vm_size(status.ullTotalPhys // (1 << 20), os.cpu_count() or 4)
+
+
+def prepare_config(settings: dict[str, str], size: dict[str, str]) -> dict[str, str]:
+    """The AVD's settings for the next start: the size for this PC, and none of the extra displays
+    the emulator saved at its last exit (hw.displayN.*): app windows make their own (emuview.py)."""
+    out = {k: v for k, v in settings.items() if not re.fullmatch(r"hw\.display\d+\.\w+", k)}
+    out.update(size)
+    return out
+
+
+def configure_vm() -> dict[str, str]:
+    """Before Android starts (changes apply from the next start): its size, and no leftover displays."""
+    if not avd_config().exists():
+        return {}
+    settings = _read_config()
+    wanted = prepare_config(settings, vm_size())
+    if wanted != settings:
+        _write_config(wanted)
+    return {k: wanted[k] for k in ("hw.cpu.ncore", "hw.ramSize")}
 
 
 # ------------------------------------------------------------------ webcam

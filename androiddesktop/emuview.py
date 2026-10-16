@@ -43,7 +43,7 @@ import win32con
 import win32gui
 from PIL import Image
 
-from . import adb, emudisplays, emugrpc, state
+from . import adb, emudisplays, emugrpc, state, winapi
 from .catalog import HELPER
 from .emudisplays import (ALWAYS_UNLOCKED, DESTROY_CONTENT_ON_REMOVAL, OWN_CONTENT_ONLY, OWN_DISPLAY_GROUP,
                           OWN_FOCUS, PUBLIC, SECURE, SUPPORTS_TOUCH, TOUCH_FEEDBACK_DISABLED,
@@ -64,14 +64,15 @@ FLAGS = (PUBLIC | SECURE | OWN_CONTENT_ONLY | SUPPORTS_TOUCH | DESTROY_CONTENT_O
          OWN_DISPLAY_GROUP | ALWAYS_UNLOCKED | TOUCH_FEEDBACK_DISABLED | OWN_FOCUS)
 KEEP_FREE = 1  # display slots left for protected screens of scrcpy windows
 DEVICE_INPUT_JAR = "/data/local/tmp/androiddesktop-input.jar"  # its own copy: another checkout may push appcatalog.jar
-INPUT_VERSION = 1
+INPUT_VERSION = 3
 VIEW_CLASS = "AndroidDesktop.EmuView"
 FIRST_FRAME_SECS = 8
 RESIZE_DEBOUNCE_MS = 60
+HOVER_EVERY = 1 / 60  # seconds between forwarded mouse moves (no button down)
 LIVE_SECS = 2.0  # a window not in use stops streaming once its app hasn't drawn anything new for this long...
 POLL_SECS = 0.33  # ...and looks for something new this often instead
 TIMER_RESIZE = 1
-WM_XBUTTONUP, WM_MOUSEHWHEEL = 0x020C, 0x020E
+WM_XBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSELEAVE = 0x020C, 0x020E, 0x02A3
 LAUNCH_FLAGS = 0x10200000  # FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_RESET_TASK_IF_NEEDED, as a launcher starts apps
 
 user32, kernel32, msvcrt = ctypes.windll.user32, ctypes.windll.kernel32, ctypes.CDLL("msvcrt")
@@ -191,18 +192,24 @@ class Link:
         log(f"emulator displays: not used until Android restarts: {reason}")
         self._disabled_for, self.disabled = point, reason
 
-    # ------------------------------------------------------------------ touches (gRPC)
+    # ------------------------------------------------------------------ touches, clipboard (gRPC)
+    def _control(self, point: tuple[int, str]) -> emugrpc.Channel:
+        """The connection for input, to this emulator (a restarted one has a new token). Hold _grpc_lock."""
+        channel = self._channel
+        if channel is None or channel.closed.is_set() or (channel.port, channel.token) != point:
+            if channel:
+                channel.close()
+            self._channel, self._touches = emugrpc.Channel(*point), None
+        return self._channel
+
     def touch(self, point: tuple[int, str], slot: int, x: int, y: int, down: bool) -> None:
         event = emugrpc.touch_event(slot, emugrpc.touch(x, y, 0, 1 if down else 0))
         for attempt in range(2):
             try:
                 with self._grpc_lock:
-                    if (self._touches is None or self._touches.done.is_set() or self._channel is None
-                            or self._channel.port != point[0]):
-                        if self._channel:
-                            self._channel.close()
-                        self._channel = emugrpc.Channel(point[0], point[1])
-                        self._touches = self._channel.call("streamInputEvent")
+                    channel = self._control(point)
+                    if self._touches is None or self._touches.done.is_set():
+                        self._touches = channel.call("streamInputEvent")
                     self._touches.send(event)
                 return
             except (OSError, emugrpc.GrpcError) as e:
@@ -214,10 +221,7 @@ class Link:
     def set_clipboard(self, point: tuple[int, str], text: str) -> None:
         try:
             with self._grpc_lock:
-                if self._channel is None or self._channel.closed.is_set():
-                    self._channel = emugrpc.Channel(point[0], point[1])
-                    self._touches = None
-                channel = self._channel
+                channel = self._control(point)
             channel.unary("setClipboard", emugrpc.pb((1, text)), timeout=3)
         except (OSError, emugrpc.GrpcError) as e:
             log(f"emulator displays: clipboard: {e!r}")
@@ -340,6 +344,8 @@ class Surface:
         self._resizing = False
         self._down = False
         self._last = (0, 0)
+        self._hovering = False
+        self._hovered = 0.0
         self._keys_down: set[int] = set()
         self._repeats: dict[int, int] = {}
         self._high_surrogate = ""
@@ -617,6 +623,17 @@ class Surface:
         self._last = (x, y)
         link.touch(self.point, self.slot, x, y, down)
 
+    def _hover(self, x: int, y: int) -> None:
+        """The mouse moved over the view without a button down: Android shows hover states, as with scrcpy."""
+        now = time.monotonic()
+        if not self._hovering:
+            winapi.track_leave(self.view)
+            self._hovering = True
+        elif now - self._hovered < HOVER_EVERY:
+            return
+        self._hovered, self._last = now, (x, y)
+        link.helper(f"hover {self.display} {x} {y}")
+
     def _key(self, keycode: int, down: bool, repeat: int = 0) -> None:
         link.helper(f"key {self.display} {0 if down else 1} {keycode} {repeat} {meta_state()}")
 
@@ -714,6 +731,13 @@ class Surface:
         if msg == win32con.WM_MOUSEMOVE:
             if self._down:
                 self._touch(*self._point(lp), True)
+            else:
+                self._hover(*self._point(lp))
+            return 0
+        if msg == WM_MOUSELEAVE:
+            if self._hovering:
+                self._hovering = False
+                link.helper(f"leave {self.display} {self._last[0]} {self._last[1]}")
             return 0
         if msg == win32con.WM_LBUTTONUP:
             if self._down:

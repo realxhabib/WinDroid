@@ -125,6 +125,11 @@ class VM:
                 self._proc.kill()
             shutil.rmtree(AVD_HOME / f"{AVD_NAME}.avd" / "snapshots", ignore_errors=True)
             try:
+                size = runtime.configure_vm()
+                log(f"vm: {size.get('hw.cpu.ncore')} cores, {size.get('hw.ramSize')} memory")
+            except Exception as e:
+                log(f"vm: size: {e!r}")
+            try:
                 picked = runtime.configure_cameras()  # the webcams plugged in now
                 log(f"vm: cameras: front {picked.get('hw.camera.front')}, back {picked.get('hw.camera.back')}")
             except Exception as e:
@@ -136,7 +141,7 @@ class VM:
                 [str(EMULATOR_EXE), "-avd", AVD_NAME, "-port", str(EMULATOR_PORT),
                  # Its Qt window, hidden, rather than -no-window: app windows stream the emulator's extra
                  # displays over gRPC (emuview.py), which a windowless emulator streams at the wrong size.
-                 # It also idles at a fraction of a windowless one's CPU. The console's auth token guards gRPC.
+                 # The console's auth token guards gRPC.
                  "-qt-hide-window", "-grpc", str(GRPC_PORT), "-grpc-use-token",
                  "-no-boot-anim", "-no-snapshot", "-gpu", "host", "-no-metrics",
                  # Keep guest RAM in memory instead of a 4 GB file that only quick-boot would use.
