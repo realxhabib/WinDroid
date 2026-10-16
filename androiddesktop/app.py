@@ -2,10 +2,12 @@
 
     pythonw -m androiddesktop                  # the launcher
     pythonw -m androiddesktop open <package>   # open one app in its own window (Start menu shortcuts)
+    pythonw -m androiddesktop boot             # start Android, nothing shown (for an AI agent's apps)
     pythonw -m androiddesktop stop             # close every app and shut Android down
     pythonw -m androiddesktop quit             # ...and exit Android Desktop entirely
     python  -m androiddesktop setup            # download and install the Android runtime (console)
     python  -m androiddesktop doctor           # check whether this PC can run Android
+    python  -m androiddesktop mcp              # the MCP server for AI agents (mcp.py)
 
 One agent process owns everything: the VM, the app windows, the tray icon and the launcher. Later
 invocations hand their request to it and exit.
@@ -32,11 +34,11 @@ import win32api  # noqa: E402
 import win32con  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from . import adb, biometrics, checks, hello, runtime, shortcuts  # noqa: E402
+from . import adb, biometrics, checks, ghost, hello, runtime, shortcuts  # noqa: E402
 from .catalog import Catalog  # noqa: E402
 from .log import log, log_uncaught  # noqa: E402
 from .manager import TRAY_OPEN, TRAY_QUIT, TRAY_STOP, WindowManager, send_to_agent  # noqa: E402
-from .paths import DATA  # noqa: E402
+from .paths import DATA, INSTANCE  # noqa: E402
 from .vm import LOCKED, OFF, RUNNING, VM  # noqa: E402
 
 UI = Path(__file__).with_name("ui") / "index.html"
@@ -209,7 +211,9 @@ class Agent:
     def handle(self, request: dict) -> None:
         log(f"request: {request}")
         if request.get("open"):
-            self.open(request["open"])
+            self.open(request["open"], adopt=request.get("adopt"))
+        if request.get("boot") and self.setup_state["installed"]:
+            threading.Thread(target=self.vm.ensure_running, kwargs={"wait_for_unlock": False}, daemon=True).start()
         if request.get("show"):
             self.show_launcher()
         if request.get("stop"):
@@ -225,7 +229,8 @@ class Agent:
         elif command == TRAY_QUIT:
             threading.Thread(target=self.quit, daemon=True).start()
 
-    def open(self, package: str, intent: list[str] | None = None) -> None:
+    def open(self, package: str, intent: list[str] | None = None, adopt: int | None = None) -> None:
+        """adopt: an AI agent's hidden display (ghost.py) the app is running on, to move into the window."""
         if not self.setup_state["installed"]:
             self.show_launcher()
             return
@@ -239,7 +244,7 @@ class Agent:
         if self.catalog.get(package) is None:
             self.notice(f"Couldn't open {package}: it isn't installed in Android.")
             return
-        self.manager.open(package, intent)
+        self.manager.open(package, intent, adopt)
 
     def unlock(self, pin: str, remember: bool | None = None) -> str:
         was_locked = self.vm.state == LOCKED
@@ -569,8 +574,19 @@ class Agent:
             if not busy and self.vm.state == OFF and not self.setup_state["busy"]:
                 self.quit()  # nothing open and Android is off: nothing left for us to do
             if not busy and self.vm.state in (RUNNING, LOCKED) and idle > IDLE_SHUTDOWN_MINUTES * 60:
+                if self._agents_busy():
+                    self._idle_since = time.monotonic()
+                    continue
                 log("idle: shutting Android down")
                 self.quit()
+
+    @staticmethod
+    def _agents_busy() -> bool:
+        """An AI agent has apps running hidden (ghost.py): Android is in use, though no window shows it."""
+        try:
+            return bool(ghost.agent_displays())
+        except Exception:
+            return False
 
 
 def main() -> None:
@@ -592,7 +608,9 @@ def main() -> None:
         return
     if command == "open" and len(args) > 1:
         request = {"open": args[1]}
-    elif command in ("stop", "quit"):
+        if len(args) > 3 and args[2] == "--adopt" and args[3].isdigit():
+            request["adopt"] = int(args[3])
+    elif command in ("boot", "stop", "quit"):
         request = {command: True}
     else:
         request = {"show": True}
@@ -605,7 +623,7 @@ def main() -> None:
     kernel32 = ctypes.windll.kernel32
     kernel32.CreateMutexW.restype = ctypes.c_void_p
     kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
-    mutex = kernel32.CreateMutexW(None, False, "Local\\AndroidDesktop.Agent")
+    mutex = kernel32.CreateMutexW(None, False, "Local\\AndroidDesktop.Agent" + INSTANCE)
     deadline = time.monotonic() + 120
     while kernel32.WaitForSingleObject(mutex, 250) not in (0, 0x80):  # WAIT_OBJECT_0 / WAIT_ABANDONED
         if send_to_agent(request) or time.monotonic() > deadline:

@@ -13,13 +13,13 @@ from pathlib import Path
 from PIL import Image
 
 from . import adb
-from .paths import DATA, ICONS
+from .paths import DATA, ICONS, INSTANCE
 
 HELPER = Path(__file__).with_name("assets") / "appcatalog.jar"
 DEVICE_HELPER = "/data/local/tmp/appcatalog.jar"
 DEVICE_ICONS = "/data/local/tmp/androiddesktop-icons"
 ICON_SIZE = 256
-CACHE = DATA / "apps.json"
+CACHE = DATA / f"apps{INSTANCE}.json"
 
 # Phone plumbing that makes no sense on a PC.
 HIDDEN = {"com.android.stk", "com.google.android.apps.safetyhub"}

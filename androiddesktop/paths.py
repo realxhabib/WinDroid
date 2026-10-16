@@ -15,7 +15,10 @@ STATE = DATA / "state.json"
 
 AVD_NAME = "AndroidDesktop"
 EMULATOR_PORT = 5584  # off the default 5554 so we never collide with a developer's own emulator
-SERIAL = f"emulator-{EMULATOR_PORT}"
+# ANDROIDDESKTOP_SERIAL points everything at another Android, e.g. a developer's test emulator. That
+# Android then gets an agent of its own (INSTANCE), apart from the user's.
+SERIAL = os.environ.get("ANDROIDDESKTOP_SERIAL") or f"emulator-{EMULATOR_PORT}"
+INSTANCE = "" if SERIAL == f"emulator-{EMULATOR_PORT}" else f".{SERIAL}"
 
 EMULATOR_EXE = SDK / "emulator" / "emulator.exe"
 ADB_EXE = SDK / "platform-tools" / "adb.exe"

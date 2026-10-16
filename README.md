@@ -26,6 +26,8 @@ drag, snap, pin to the taskbar or maximize like any other Windows app.
   Windows Hello asks instead, above that app's window: face, fingerprint reader or Windows PIN. Set it up once with **Set up fingerprint** in the launcher.
 - **Recovers by itself.** If an app's connection drops, or Android itself crashes, its window shows
   "Reconnecting..." and brings the app back (starting Android again if needed) instead of vanishing.
+- **Android apps for AI agents.** An MCP server lets Claude (or any MCP client) run Android apps
+  hidden, read and operate them, and hand one to you in a normal window when you should see it.
 
 Everything runs locally.
 
@@ -91,10 +93,70 @@ Hello leaves the finger off.
 | `pythonw -m androiddesktop quit` | ...and exit Android Desktop |
 | `python -m androiddesktop setup` | Download and install the Android runtime from a console |
 | `python -m androiddesktop doctor` | Check whether this PC can run Android, and print what's wrong |
+| `pythonw -m androiddesktop boot` | Start Android without showing anything (what an AI agent's session asks for) |
+| `python -m androiddesktop mcp` | The MCP server for AI agents (below), over stdin/stdout |
 
 A tray icon (bottom right of the taskbar) opens the launcher and has **Shut down Android** and
-**Quit**. Closing the launcher keeps your app windows running. When no app windows are open and the
-launcher is closed, Android shuts itself down after 10 minutes.
+**Quit**. Closing the launcher keeps your app windows running. When no app windows are open, the
+launcher is closed and no AI agent has an app running, Android shuts itself down after 10 minutes.
+
+### Android apps for AI agents (MCP)
+
+Android Desktop is also an MCP server, so an AI agent such as Claude can use Android apps for you.
+By default the agent's apps run **hidden**: each on an Android display of its own with no window, so
+nothing on your screen changes while it works. The agent reads an app as a compact accessibility
+tree (about 2 KB of JSON for a typical screen, read in under 100 ms), taps, types and scrolls by
+element id, and can add a screenshot when the tree isn't enough. When you should see something, or
+take over, the agent calls `show_to_user` and the app moves into a normal Android Desktop window,
+exactly as the agent left it.
+
+Add it to **Claude Code** (use the Python of the venv you installed Android Desktop into; `--scope
+user` makes it available in every project):
+
+```powershell
+claude mcp add --scope user androiddesktop -- C:\path\to\android-desktop\.venv\Scripts\python.exe -m androiddesktop mcp
+```
+
+Or to **Claude Desktop**, in `%APPDATA%\Claude\claude_desktop_config.json`, then restart it:
+
+```json
+{
+  "mcpServers": {
+    "androiddesktop": {
+      "command": "C:\\path\\to\\android-desktop\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "androiddesktop", "mcp"]
+    }
+  }
+}
+```
+
+Then ask, for example: *"Using Android Desktop, set a 10-minute timer in Clock and tell me how long
+is left."* The tools:
+
+| Tool | |
+|---|---|
+| `list_apps` | The installed apps: label and package |
+| `start_session(package, visible=false)` | Start an app (by package or name) hidden, or in a window with `visible=true`. Returns a session id. With `visible=true`, an app already open in your window is joined rather than started again |
+| `read_screen(session, screenshot=false)` | The screen as JSON: windows, top first, and their elements with `id`, `class`, `text`/`desc`, `bounds` and flags (`clickable`, `editable`, `scrollable`, `checked`, ...). `screenshot=true` adds a JPEG (hidden sessions) |
+| `tap(session, element_id \| x, y)` | Tap an element or a point, then wait for the screen to settle |
+| `type_text(session, text, element_id?, submit=false)` | Put text in a field (any language; it replaces what's there), optionally pressing the keyboard's action key |
+| `press(session, back \| home \| enter)` | A key |
+| `scroll(session, direction, element_id?)` | Scroll up, down, left or right; `down` shows what's further down |
+| `wait_for(session, text, timeout=10)` | Wait until text appears; returns the matching elements |
+| `show_to_user(session)` | Move the app into a normal window; the session goes on there |
+| `end_session(session)` | End it: a hidden app closes, an app in your window stays open |
+
+Things worth knowing:
+
+- **Secure screens are yours.** While Android shows a screen marked secure (PIN and password entry,
+  payment sheets: `FLAG_SECURE`), the agent gets `secure screen: needs the user` instead of its
+  content, its input is refused, and it's told to call `show_to_user` so you can take it from there.
+- **Locked Android.** If Android is locked after a start (screen-lock PIN), the agent is told to ask
+  you to unlock it in the launcher; it never types your PIN. If Android isn't running, the first
+  session starts it, without showing anything.
+- **Logs.** Every tool call goes to `%LOCALAPPDATA%\AndroidDesktop\logs\agent.log`, with its result
+  and timing. Text typed with `type_text` is logged as its length only, since it may be a password.
+- **Cleanup.** Ending a session, or the MCP server (when Claude Code exits), closes its hidden apps.
 
 ## How it works
 
@@ -159,9 +221,25 @@ Launcher (WebView2)      App window (Win32, frameless)      App window ...
 - **Agent** (`app.py`, `manager.py`): one process owns the VM, the windows, the tray icon and the
   launcher. Start menu shortcuts send their request to the running agent via `WM_COPYDATA`.
 - **Launcher** (`ui/`): HTML/CSS in a frameless WebView2 window (pywebview).
+- **Agent sessions** (`ghost.py`, `mcp.py`, `uitree.py`, `agenthelper.py` and
+  `helper/src/AgentHelper.java`): the MCP server keeps one helper process running inside Android
+  (`app_process`, one JSON line each way over `adb shell`). It makes each hidden app's virtual
+  display (scrcpy's display flags, drawn into an `ImageReader`, which is also where screenshots come
+  from: `screencap` can't capture virtual displays), and reads accessibility trees through
+  `UiAutomation`, as `uiautomator` does. `uiautomator dump` takes about 2.5 s because it starts a new
+  process, connects and waits a second for the screen to be idle; the helper stays connected, so a
+  read is a few accessibility round trips (10 to 50 ms, under 100 ms with the secure-screen check).
+  `uitree.py` drops layout-only nodes, folds a tappable row's labels into it and drops repeated
+  labels: Clock's Timer keypad goes from 61 nodes to 20 elements. Taps, keys and swipes go through
+  `input -d <display>`; typing uses the accessibility "set text" action, which reaches a field
+  without keyboard focus and takes any language. `show_to_user` asks the agent process to open the
+  app's window with `--adopt <display>`: scrcpy starting the app on the window's display makes
+  Android move the app's existing task there, and `AppWindow.adopt` moves anything left behind. A
+  session in a window follows its app, including onto `protected.py`'s secure display.
 
-Logs: `%LOCALAPPDATA%\AndroidDesktop\logs` (`androiddesktop.log`, `emulator.log`, and one file per
-app window under `windows\`). Uncaught errors from any thread are logged too, with their traceback.
+Logs: `%LOCALAPPDATA%\AndroidDesktop\logs` (`androiddesktop.log`, `emulator.log`, `agent.log` for AI
+agents, and one file per app window under `windows\`). Uncaught errors from any thread are logged
+too, with their traceback.
 
 ## Development
 
@@ -172,6 +250,11 @@ app window under `windows\`). Uncaught errors from any thread are logged too, wi
   app opens and draws, follows a resize, comes back after scrcpy is killed, and cleans up on close.
   Its windows live in its own process, so it tests your working copy even while the agent runs. It
   doesn't cover typing.
+- `python tools/agent_demo.py` runs the agent demo through the MCP server, the way Claude Code
+  talks to it: Clock starts hidden, gets a 10-minute timer, the time left is read back, no window
+  appears on the PC until `show_to_user` puts Clock in one, timer still running.
+- `ANDROIDDESKTOP_SERIAL=emulator-5620` (any adb serial) points everything at another Android, such
+  as a test emulator, which then gets an agent process and app list of its own, apart from yours.
 - `python tools/try_windows.py <package>...` opens app windows without the launcher.
 - `python tools/snap.py "<window title>" out.png` captures one window, for checking the UI.
 - `python tools/build_helper.py` rebuilds `androiddesktop/assets/appcatalog.jar` from
@@ -197,6 +280,13 @@ app window under `windows\`). Uncaught errors from any thread are logged too, wi
   canceled from the PC. If you cancel Windows Hello, the app keeps waiting until it gives up or another
   app comes to the front (Android then cancels it), or until it asks again.
 - Notifications stay inside Android for now.
+- AI agents: moving an app from its hidden display into a window changes its screen size, so Android
+  recreates the app's screen, as when a phone rotates. Well-made apps keep their state (Clock's
+  timer runs on); an app that doesn't may lose what's on screen, such as half-typed text.
+- AI agents: only one `UiAutomation` can be connected in Android at a time. While an agent reads
+  screens, `uiautomator dump` (and a second MCP server's reads) fail; the helper lets go after 30
+  seconds without a read. `home` does nothing on a hidden display, which has no home screen.
+  Screenshots are for hidden apps; for an app in your window the agent gets the tree only.
 - Protected (`FLAG_SECURE`) screens update a few times a second instead of at full speed, and typing
   on them is limited to plain ASCII text. If one can't be moved to a secure display, the window says
   so (close it and reopen the app to leave that screen); it never just goes black.

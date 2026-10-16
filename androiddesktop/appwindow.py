@@ -107,10 +107,12 @@ def on_color(bg: tuple) -> tuple[int, int, int]:
 
 
 class AppWindow:
-    def __init__(self, manager: WindowManager, app: App, intent: list[str] | None = None) -> None:
+    def __init__(self, manager: WindowManager, app: App, intent: list[str] | None = None,
+                 adopt: int | None = None) -> None:
         self.manager = manager
         self.app = app
         self.intent = intent
+        self.adopting = adopt  # a hidden display to bring the app in from, once it shows (adopt())
         self.hwnd = 0
         self.child = 0
         self.proc: subprocess.Popen | None = None
@@ -415,6 +417,8 @@ class AppWindow:
         if self.intent:
             self.run_intent(self.intent)
             self.intent = None
+        if self.adopting is not None:
+            self.adopt(self.adopting)
         if win32gui.GetForegroundWindow() == self.hwnd:
             win32gui.SetFocus(child)
         win32gui.InvalidateRect(self.hwnd, None, False)
@@ -425,6 +429,29 @@ class AppWindow:
         if self.display_id is not None:
             command = f"am start --display {self.display_id} " + shlex.join(intent)
             threading.Thread(target=adb.shell, args=(command,), daemon=True).start()
+
+    def adopt(self, display: int) -> None:
+        """Take in the app as an AI agent left it on a hidden display of its own (ghost.py). scrcpy's launch
+        of the app here usually brings its task over already (Android moves a running app's task to the
+        display it's started on); any task still left there moves now."""
+        if self.display_id is None or not self.child:
+            self.adopting = display  # once the app shows
+            return
+        self.adopting = None
+        threading.Thread(target=self._take_tasks, args=(display, self.display_id), daemon=True,
+                         name=f"adopt-{self.app.package}").start()
+
+    def _take_tasks(self, source: int, target: int) -> None:
+        from .protected import parse_root_tasks, reset_secure_state_soon  # protected.py imports this module
+        try:
+            tasks = parse_root_tasks(adb.shell("cmd activity stack list", timeout=10), source)
+            for task in reversed(tasks):  # bottom first, so they keep their order
+                adb.shell(f"am display move-stack {task} {target}", timeout=10)
+            reset_secure_state_soon()  # moving a secure screen can black out every window (protected.py)
+            moved = f", moved tasks {tasks}" if tasks else ""
+            log(f"{self.app.package}: adopted from display {source}{moved}")
+        except Exception as e:
+            log(f"{self.app.package}: adopting from display {source}: {e!r}")
 
     def _layout(self, frame_changed: bool = False) -> None:
         if not self.child or not win32gui.IsWindow(self.child):

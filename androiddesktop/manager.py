@@ -24,10 +24,11 @@ from . import adb, winapi
 from .appwindow import FAILED, RUNNING as WINDOW_RUNNING, AppWindow
 from .log import log
 from .catalog import Catalog
+from .paths import INSTANCE
 from .protected import SecureScreens
 from .vm import LOCKED, RUNNING, VM
 
-AGENT_CLASS = "AndroidDesktop.Agent"
+AGENT_CLASS = "AndroidDesktop.Agent" + INSTANCE
 APP_CLASS = "AndroidDesktop.AppWindow"
 WM_APP_CALL = win32con.WM_APP + 20
 WM_APP_TRAY = win32con.WM_APP + 21
@@ -200,11 +201,12 @@ class WindowManager:
         win32gui.DestroyMenu(menu)
 
     # ------------------------------------------------------------------ windows
-    def open(self, package: str, intent: list[str] | None = None) -> None:
-        """Open (or bring forward) an app's window; intent: optional `am start` arguments to run in it."""
-        self.call(lambda: self._open(package, intent))
+    def open(self, package: str, intent: list[str] | None = None, adopt: int | None = None) -> None:
+        """Open (or bring forward) an app's window; intent: optional `am start` arguments to run in it;
+        adopt: a display the app is running on hidden (an AI agent's, ghost.py), to bring it in from."""
+        self.call(lambda: self._open(package, intent, adopt))
 
-    def _open(self, package: str, intent: list[str] | None) -> None:
+    def _open(self, package: str, intent: list[str] | None, adopt: int | None = None) -> None:
         if package in self.windows and not self.windows[package].closing:
             win = self.windows[package]
             win.focus()
@@ -212,12 +214,14 @@ class WindowManager:
                 win.retry()
             if intent:
                 win.run_intent(intent)
+            if adopt is not None:
+                win.adopt(adopt)
             return
         app = self.catalog.get(package)
         if app is None:
             self.on_notice(f"Couldn't open {package}: it isn't in Android's app list.")
             return
-        win = AppWindow(self, app, intent)
+        win = AppWindow(self, app, intent, adopt)
         self.windows[package] = win
         self._empty.clear()
         win.create()

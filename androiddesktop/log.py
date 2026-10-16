@@ -1,4 +1,5 @@
-"""One shared log file in %LOCALAPPDATA%/AndroidDesktop/logs/androiddesktop.log."""
+"""One shared log file in %LOCALAPPDATA%/AndroidDesktop/logs/androiddesktop.log, and agent.log beside it
+for what AI agents do (ghost.py, mcp.py)."""
 from __future__ import annotations
 
 import sys
@@ -14,10 +15,19 @@ _lock = threading.Lock()
 def log(message: str) -> None:
     line = f"{time.strftime('%H:%M:%S')} {message}"
     print(line, flush=True)
+    _write("androiddesktop.log", line)
+
+
+def agent_log(message: str) -> None:
+    """An AI agent's action, in agent.log. Never printed: an MCP server's stdout is its protocol."""
+    _write("agent.log", f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}")
+
+
+def _write(name: str, line: str) -> None:
     with _lock:
         try:
             LOGS.mkdir(parents=True, exist_ok=True)
-            with (LOGS / "androiddesktop.log").open("a", encoding="utf-8") as f:
+            with (LOGS / name).open("a", encoding="utf-8") as f:
                 f.write(line + "\n")
         except OSError:
             pass
