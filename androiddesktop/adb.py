@@ -18,6 +18,12 @@ def shell(command: str, timeout: float = 30) -> str:
     return run("shell", command, timeout=timeout).stdout
 
 
+def start(*args: str, **popen_args) -> subprocess.Popen:
+    """A long-lived adb, e.g. an `adb shell` streaming logcat."""
+    return subprocess.Popen([str(ADB_EXE), "-s", SERIAL, *args], env=android_env(), creationflags=CREATE_NO_WINDOW,
+                            **popen_args)
+
+
 def online() -> bool:
     try:
         return run("get-state", timeout=5).stdout.strip() == "device"

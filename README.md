@@ -37,7 +37,8 @@ Everything runs locally.
   feature (on by default when Hyper-V, WSL2 or Windows Sandbox are in use).
 - Python 3.11+.
 - About 7 GB of disk (more as you install apps), 2.4 GB of it downloaded once on first run.
-- 8 GB of RAM or more; Android uses about 5 GB while running.
+- 8 GB of RAM or more. Android gets 8 GB of it on a PC with 24 GB or more (6 GB from 14 GB, else
+  4 GB), and up to 6 processor cores (half the PC's threads, at least 4).
 
 Android Desktop checks these itself, before setup and before every start of Android, and shows what to
 fix in the launcher (for example a **Turn it on** button for Windows Hypervisor Platform). To see the
@@ -58,6 +59,15 @@ itself to the Start menu as **Android Desktop**.
 
 Android takes about 30 seconds to start; the very first boot takes a few minutes while Android
 sets itself up. Sign in to Google Play from **Get apps** to install apps.
+
+Two settings live in `%LOCALAPPDATA%\AndroidDesktop\state.json` (edit it while Android Desktop isn't
+running):
+
+- `"app_windows": "scrcpy"` shows every app through scrcpy, as before; the default (`"auto"`) uses
+  the emulator's own displays for up to seven windows (see How it works).
+- `"scrcpy_quality"`: `"high"` (default: the window's full size, 12 Mbit/s, 60 fps), `"balanced"`
+  (75%, 6 Mbit/s) or `"low"` (half size, 3 Mbit/s, 30 fps), for windows shown through scrcpy. Lower
+  costs Android less CPU and looks softer.
 
 If you set a screen-lock PIN or password in Android (Google Play may ask for one), Android starts
 **locked** after every boot, like a phone after a restart: your apps' data stays encrypted until the
@@ -161,26 +171,50 @@ Things worth knowing:
 ## How it works
 
 ```
-Launcher (WebView2)      App window (Win32, frameless)      App window ...
-        \                          |  hosts                       |
-         \                 scrcpy video window  --- adb ---  virtual display N
-          \________ agent process ________/                       |
-                         |                               Android 16 VM (headless
-                    adb / emulator console                Android Emulator, WHPX)
+Launcher (WebView2)      App window (Win32, frameless)            App window (8th and on) ...
+        \                          |  hosts                              |  hosts
+         \                 Direct3D view <-- gRPC frames,     scrcpy video window -- adb --
+          \                        |         shared memory           virtual display N
+           \________ agent process ________/        |                       |
+                         |                emulator display 1..7     Android 16 VM (Android
+                    adb / emulator console / gRPC              Emulator, window hidden, WHPX)
 ```
 
-- **The VM** (`vm.py`): Google's Android Emulator, run with `-no-window`, accelerated by the Windows
-  Hypervisor Platform. Android's own screen is never shown.
-- **App windows** (`appwindow.py`): each app is started on a new Android *virtual display* by
-  [scrcpy 5](https://github.com/Genymobile/scrcpy) (`--new-display --flex-display --start-app`). Its
-  borderless video window is re-parented into a custom Win32 window that draws the slim bar
-  (`WM_NCCALCSIZE` removes the caption, `WM_NCHITTEST` maps the bar to caption, resize edges and
-  `HTMAXBUTTON` for Snap Layouts). The bar's color is sampled from the top of the app's image. A
-  flex display follows the window size, so resizing the window resizes the app. When an app exits
-  (e.g. Back on its first screen), its window closes too. If scrcpy exits on its own instead, the
-  window reconnects: it relaunches scrcpy on a fresh display, backing off 1, 2, 4, 8 and 15 seconds,
-  then offers **Try again**.
-- **Protected screens** (`protected.py`): some screens are marked secure (`FLAG_SECURE`): Play's
+- **The VM** (`vm.py`): Google's Android Emulator with its window hidden (`-qt-hide-window`),
+  accelerated by the Windows Hypervisor Platform, with its gRPC control API on (`-grpc`, guarded by
+  the console's auth token). Android's own screen is never shown. Before every start `runtime.py`
+  sizes it for the PC (cores, memory) and drops any extra displays the emulator saved at its last exit.
+- **App windows** (`appwindow.py`, `emuview.py`): each app gets an Android display of its own, sized
+  like the window, in a custom Win32 window that draws the slim bar (`WM_NCCALCSIZE` removes the
+  caption, `WM_NCHITTEST` maps the bar to caption, resize edges and `HTMAXBUTTON` for Snap Layouts).
+  The bar's color is sampled from the top of the app's image. Resizing the window resizes the
+  display (and the app re-lays itself out); moving it to a monitor with another scale changes the
+  display's density.
+  - Up to seven windows use the **emulator's own displays** (`adb emu multidisplay add`, slots 1 to 8,
+    one kept for protected screens; `emudisplays.py`). The emulator composes them on the PC's GPU
+    anyway, so their frames come straight from its gRPC API (`emugrpc.py`, a small HTTP/2 + protobuf
+    client with no dependencies: `streamScreenshot`, written into shared memory) and a Direct3D 11
+    child window (`d3d.py`) copies each one into its back buffer, 1:1. Nothing is video-encoded:
+    scrolling Settings costs Android about 60% of a core instead of 285% (`media.swcodec` alone was
+    140%), at a steady 59 fps instead of 35, and input reaches the screen a frame sooner. The emulator
+    wakes every stream whenever any display draws, so only the window in use and windows whose app is
+    drawing stream; the others look for a change three times a second, and minimized ones not at all.
+    The left mouse button is a finger on that display's touchscreen (gRPC); keys, typed text, the
+    wheel and the pointer's hover go through `helper/src/InputHelper.java`, which injects them with
+    the display's id, as `input -d` does without a process per key. These displays are secure, so `FLAG_SECURE` screens
+    (Play's purchase sheet, PIN pads) work in them at full speed. They don't rotate with their app: an
+    app that wants another orientation shows upright, letterboxed, until the window is shaped to suit.
+    A windowless emulator streams extra displays at the wrong size, which is why the emulator keeps
+    its (hidden) window.
+  - Beyond that, or without the emulator's gRPC (an Android started by an older version), windows use
+    [scrcpy 5](https://github.com/Genymobile/scrcpy) (`--new-display --flex-display --start-app`):
+    a virtual display encoded to H.264 inside Android, its borderless video window re-parented into
+    ours.
+
+  When an app exits (e.g. Back on its first screen), its window closes too. If its display goes away
+  on its own (scrcpy exited, or Android did), the window reconnects: it starts the app on a fresh
+  display, backing off 1, 2, 4, 8 and 15 seconds, then offers **Try again**.
+- **Protected screens** (`protected.py`, scrcpy windows only): some screens are marked secure (`FLAG_SECURE`): Play's
   install and purchase sheet, Google's passkey QR code, PIN pads. Android blacks them out on any
   display that isn't secure itself and, since Android 16, drops every click and key sent to them.
   scrcpy's displays can't be secure (that takes a permission the shell user doesn't have), but the
@@ -192,6 +226,8 @@ Launcher (WebView2)      App window (Win32, frameless)      App window ...
   secure layer it treats *every* layer as secure, so every app window goes black and deaf until the
   next screenshot of something else. After each move, `helper/src/SecureReset.java` (in
   `appcatalog.jar`) takes that next screenshot: 1×1 pixel of a layer of its own, on no display.
+  It looks for secure windows when Android's event log says a window got focus or an activity came
+  to the front, and every 15 seconds besides, only while a scrcpy window is open.
 - **Crash recovery** (`vm.py`): the VM notices an emulator that died (its process ended, or adb lost
   it for good) and marks Android as off; the next window that reconnects boots it again.
 - **Locked Android** (`vm.py`, `adb.py`): after boot, `sys.user.0.ce_available` and
@@ -206,7 +242,9 @@ Launcher (WebView2)      App window (Win32, frameless)      App window ...
   virtual sensor (`adb emu finger touch 1`). Android's `BiometricScheduler` runs one client at a time,
   shown in `dumpsys fingerprint` as its "Current operation" with the package that asked (an
   authentication for a BiometricPrompt, the lock screen, Play or a passkey; an enrollment for
-  Settings). Lines from Android's biometric services in logcat say when to look again. When an
+  Settings). The scheduler logs each operation as it starts and finishes; logcat, filtered to its
+  tags inside Android, says when to look again (and nothing else: apps ask "can I authenticate?"
+  constantly). When an
   authentication is waiting, the app's window is found through `cmd activity stack list` (the
   display where that package is on top), and Windows Hello asks above it: WinRT's
   `UserConsentVerifier` through `IUserConsentVerifierInterop.RequestVerificationForWindowAsync`,
@@ -247,9 +285,11 @@ too, with their traceback.
   parsing what Android and scrcpy report, including the fingerprint prompts the Windows Hello bridge
   reacts to and what it does about them.
 - `python tools/smoke_test.py [package]` checks app windows end to end against the real Android: the
-  app opens and draws, follows a resize, comes back after scrcpy is killed, and cleans up on close.
-  Its windows live in its own process, so it tests your working copy even while the agent runs. It
-  doesn't cover typing.
+  app opens and draws, follows a resize, comes back after its display goes away (and, on an emulator
+  display, after its frame stream drops), and cleans up on close. `--scrcpy` checks the scrcpy
+  fallback. Its windows live in its own process, so it tests your working copy even while the agent
+  runs. It doesn't cover typing. With `ANDROIDDESKTOP_SERIAL` set it never boots an Android: start the
+  test emulator first.
 - `python tools/agent_demo.py` runs the agent demo through the MCP server, the way Claude Code
   talks to it: Clock starts hidden, gets a 10-minute timer, the time left is read back, no window
   appears on the PC until `show_to_user` puts Clock in one, timer still running.
@@ -265,7 +305,11 @@ too, with their traceback.
 
 ## Known limitations
 
-- Video is encoded in software inside the VM, so very large windows of fast-moving games cost CPU.
+- From the eighth app window on (or with an Android started by an older version), apps show through
+  scrcpy: video encoded in software inside the VM, so large windows of fast-moving games cost CPU
+  there (`scrcpy_quality` trades sharpness for it).
+- On the emulator's displays a mouse drag is a finger: it scrolls and flings like a phone rather than
+  selecting text, and Shift+right-click is Back like right-click.
 - Android always cold-boots (about 30 s). Quick-boot snapshots would be faster, but restoring them
   headless proved unreliable.
 - The camera and microphone are the PC's: the first webcam the emulator lists, and the default
@@ -287,6 +331,6 @@ too, with their traceback.
   screens, `uiautomator dump` (and a second MCP server's reads) fail; the helper lets go after 30
   seconds without a read. `home` does nothing on a hidden display, which has no home screen.
   Screenshots are for hidden apps; for an app in your window the agent gets the tree only.
-- Protected (`FLAG_SECURE`) screens update a few times a second instead of at full speed, and typing
+- In scrcpy windows, protected (`FLAG_SECURE`) screens update a few times a second instead of at full speed, and typing
   on them is limited to plain ASCII text. If one can't be moved to a secure display, the window says
   so (close it and reopen the app to leave that screen); it never just goes black.

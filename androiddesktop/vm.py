@@ -1,5 +1,5 @@
-"""The Android VM: Google's emulator running headless. Nothing of Android's own screen is ever shown;
-every app gets a virtual display of its own (see appwindow.py).
+"""The Android VM: Google's emulator with its window hidden. Nothing of Android's own screen is ever
+shown; every app gets a display of its own (see appwindow.py).
 
 Android always boots fresh (about half a minute) and is powered off cleanly, so its storage is always
 consistent. Quick-boot snapshots would start faster, but restoring them headless proved unreliable
@@ -22,7 +22,7 @@ from typing import Callable
 
 from . import adb, checks, runtime
 from .log import log
-from .paths import AVD_HOME, AVD_NAME, EMULATOR_EXE, EMULATOR_PORT, LOGS, android_env
+from .paths import AVD_HOME, AVD_NAME, EMULATOR_EXE, EMULATOR_PORT, GRPC_PORT, LOGS, android_env
 
 OFF, STARTING, RUNNING, STOPPING, LOCKED = "off", "starting", "running", "stopping", "locked"
 LOCKED_DETAIL = "Android is locked. Enter your PIN to unlock it."
@@ -125,6 +125,11 @@ class VM:
                 self._proc.kill()
             shutil.rmtree(AVD_HOME / f"{AVD_NAME}.avd" / "snapshots", ignore_errors=True)
             try:
+                size = runtime.configure_vm()
+                log(f"vm: {size.get('hw.cpu.ncore')} cores, {size.get('hw.ramSize')} memory")
+            except Exception as e:
+                log(f"vm: size: {e!r}")
+            try:
                 picked = runtime.configure_cameras()  # the webcams plugged in now
                 log(f"vm: cameras: front {picked.get('hw.camera.front')}, back {picked.get('hw.camera.back')}")
             except Exception as e:
@@ -133,7 +138,11 @@ class VM:
             out = (LOGS / "emulator.log").open("w", encoding="utf-8", errors="replace")
             log("vm: starting the emulator")
             self._proc = subprocess.Popen(
-                [str(EMULATOR_EXE), "-avd", AVD_NAME, "-port", str(EMULATOR_PORT), "-no-window",
+                [str(EMULATOR_EXE), "-avd", AVD_NAME, "-port", str(EMULATOR_PORT),
+                 # Its Qt window, hidden, rather than -no-window: app windows stream the emulator's extra
+                 # displays over gRPC (emuview.py), which a windowless emulator streams at the wrong size.
+                 # The console's auth token guards gRPC.
+                 "-qt-hide-window", "-grpc", str(GRPC_PORT), "-grpc-use-token",
                  "-no-boot-anim", "-no-snapshot", "-gpu", "host", "-no-metrics",
                  # Keep guest RAM in memory instead of a 4 GB file that only quick-boot would use.
                  "-feature", "-QuickbootFileBacked"],

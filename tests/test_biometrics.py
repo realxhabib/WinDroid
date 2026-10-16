@@ -122,6 +122,7 @@ class Prompts(unittest.TestCase):
         self.bridge = biometrics.Bridge(self.manager, lambda p: {"com.google.android.gms": "Google Play services"}.get(p, p),
                                         lambda: 0x111)
         self.bridge.available = True
+        self.bridge._spawn = lambda fn, *args: fn(*args)  # the prompt, here and now
         for p in (mock.patch.object(biometrics, "log"), mock.patch.object(biometrics.time, "sleep"),
                   mock.patch.object(biometrics.win32gui, "GetForegroundWindow", return_value=0)):
             p.start()
@@ -184,12 +185,20 @@ class Prompts(unittest.TestCase):
             self.assertEqual(self.sent, [])
 
     def test_hello_goes_away_with_the_prompt(self):
-        looks = [AUTH, AUTH, IDLE]
-        with mock.patch.object(biometrics.adb, "shell", side_effect=lambda c, timeout=0: STACKS if "stack" in c else looks.pop(0)), \
-                mock.patch.object(biometrics.hello, "verify", return_value=hello.CANCELED) as verify:
-            self.bridge._check()
-            wanted = verify.call_args.kwargs["wanted"]
-        self.assertFalse(wanted())  # the third look: the app gave up, so the Windows Hello prompt closes
+        verify, _ = self.run_check([AUTH], verdict=hello.CANCELED)
+        wanted = verify.call_args.kwargs["wanted"]
+        self.assertTrue(wanted())
+        self.run_check([IDLE])  # the scheduler logged the operation finishing: the watcher looks again
+        self.assertFalse(wanted())  # the app gave up, so the Windows Hello prompt closes
+
+    def test_wakes_only_for_the_scheduler(self):
+        lines = ["D/BiometricScheduler(  664): [Started] {[12] ...FingerprintAuthenticationClient, owner=com.foo}",
+                 "D/BiometricStateCallback(  664): Enrollment state changed: true",
+                 "D/BiometricService(  664): canAuthenticate: User=0, Caller=0, Authenticators=15",
+                 "I/AconfigPackage(28365): com.android.server.biometrics is mapped to system",
+                 "--------- beginning of system"]
+        self.assertEqual([bool(biometrics.WAKE.search(line)) for line in lines], [True, True, False, False, False])
+        self.assertIn("-s BiometricScheduler:V", biometrics.LOGCAT)
 
     def test_waits_for_the_dialog(self):
         verify, touch = self.run_check([WAITING])
