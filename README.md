@@ -28,6 +28,9 @@ drag, snap, pin to the taskbar or maximize like any other Windows app.
   "Reconnecting..." and brings the app back (starting Android again if needed) instead of vanishing.
 - **Android apps for AI agents.** An MCP server lets Claude (or any MCP client) run Android apps
   hidden, read and operate them, and hand one to you in a normal window when you should see it.
+- **On your iPhone or iPad.** Send one app (not the whole of Android) to your iPhone or iPad over
+  your home Wi-Fi. It runs full screen in Safari, by touch, sized to the device and following its
+  rotation, and comes back to its window when you like.
 
 Everything runs locally.
 
@@ -158,6 +161,52 @@ Things worth knowing:
   and timing. Text typed with `type_text` is logged as its length only, since it may be a password.
 - **Cleanup.** Ending a session, or the MCP server (when Claude Code exits), closes its hidden apps.
 
+### Your iPhone or iPad
+
+Send an app to your iPhone or iPad on the same Wi-Fi, where it runs full screen in Safari: only that
+app. Android gives it a display of its own, the size and shape of the device's screen (an app sees as
+many dp as the device has points), and resizes it when you rotate the device.
+
+**Once:**
+
+1. In the launcher, click **iPhone & iPad**, then **Turn on**. WinDroid listens only on your home
+   network (one Windows calls *Private*), on this PC's own address there, never on the internet.
+   Windows asks for administrator rights once, when you click **Allow**, to add one firewall rule:
+   this program, port 47821, devices on your local subnet, Private networks only.
+2. Click **Pair an iPhone or iPad** and scan the QR code with the device's Camera, then tap the
+   link. The code works once, for 5 minutes. Paired devices are listed there; the bin icon unpairs one.
+3. For smooth video, let the device trust this PC, once. The page shows how: **Get the profile**,
+   then in Settings **Profile Downloaded > Install**, then **General > About > Certificate Trust
+   Settings**, turn on **WinDroid on *your PC***. Come back to Safari and the page switches to
+   https:// by itself. Until then the PC decodes the video and sends JPEG frames: it works, less smoothly.
+
+**Then:**
+
+- Send an app with the phone button in its window's bar (**Move to iPhone**, or **Show on iPhone too**
+  to have both show the same screen, letterboxed), or right-click it in the launcher. Or open
+  WinDroid on the device and tap an app: it moves there.
+- The window then says the app is on your iPhone, with **Bring back**; so does the device's **⋯**
+  menu. Closing that window leaves the app on the device.
+- Tap, drag, long-press and pinch as on Android. Back is **◁** or a swipe in from the screen's left
+  or right edge; **○** lists your apps; **⌨** opens the device's keyboard (Android's own keyboard also
+  shows up when a field is focused). An iPad's keyboard types straight in, with Cmd as Ctrl.
+- **Add to Home Screen** (Share) gives each app its own icon and name. A new icon may ask to be
+  allowed once: the launcher shows a 6-digit code, allow it if the device shows the same. Add icons
+  from the https:// page (after step 3) to get the smooth video in them too.
+- It reconnects by itself when the Wi-Fi drops or the device sleeps. **⋯ > Picture** trades
+  sharpness for frame rate (Smooth, Balanced, Sharp). The chip at the top says which decoder is in
+  use (WebCodecs or JPEG), the frame rate and the latency from the PC.
+
+**Security.** Nothing works until a device is paired. Pairing combines the QR code's one-time token
+(in the link's #fragment, which browsers never send) with an X25519 key exchange, so the device's
+secret never crosses the Wi-Fi, not even before step 3. Every connection then proves itself with that
+secret, in both directions, and every touch and keystroke is signed. Without the token (a new Home
+Screen icon), you approve the device on the PC after comparing a code derived from the key exchange.
+App pages and icons live at unguessable addresses, so the network can't learn which apps you have.
+The certificate authority your device trusts is limited to private network addresses: it can't vouch
+for any website, and its key stays on the PC, encrypted for your Windows account. Before step 3 the
+video itself travels unencrypted on your Wi-Fi.
+
 ## How it works
 
 ```
@@ -255,6 +304,11 @@ too, with their traceback.
   appears on the PC until `show_to_user` puts Clock in one, timer still running.
 - `ANDROIDDESKTOP_SERIAL=emulator-5620` (any adb serial) points everything at another Android, such
   as a test emulator, which then gets an agent process and app list of its own, apart from yours.
+  `ANDROIDDESKTOP_DATA=<folder>` keeps settings, logs and paired devices in another folder as well.
+- `ANDROIDDESKTOP_REMOTE_LOOPBACK=1` also serves the iPhone & iPad pages on http://127.0.0.1:47821,
+  which browsers treat as secure, so the web app (`androiddesktop/remote/web`) can be tried with
+  WebCodecs in a desktop browser without a certificate. The unit tests include the web app's crypto
+  (`tests/js/wdcrypto.test.js`, run through Node.js when it's installed).
 - `python tools/try_windows.py <package>...` opens app windows without the launcher.
 - `python tools/snap.py "<window title>" out.png` captures one window, for checking the UI.
 - `python tools/build_helper.py` rebuilds `androiddesktop/assets/appcatalog.jar` from
@@ -290,3 +344,12 @@ too, with their traceback.
 - Protected (`FLAG_SECURE`) screens update a few times a second instead of at full speed, and typing
   on them is limited to plain ASCII text. If one can't be moved to a secure display, the window says
   so (close it and reopen the app to leave that screen); it never just goes black.
+- iPhone & iPad: video is as smooth as Android draws it in the VM, about 20 to 40 frames a second for
+  everyday apps (software encoding). On a test VM a tap's first frame reached the PC after about 70 to
+  90 ms, almost all of it Android's own; the Wi-Fi and the device's decoding come on top. A secure
+  (`FLAG_SECURE`) screen is black on the device, as Android wants: the device says so and offers
+  Bring back. Moving an app to the device, back, or rotating it recreates the app's screen, as when a
+  phone rotates. If the PC's address on the Wi-Fi changes, pair again (Home Screen icons keep the old one).
+- Sound stays on the PC. Sending one app's sound to the device looks feasible: Android 13+ can capture
+  a single app's playback (AudioPlaybackCapture by app; scrcpy has a playback source), which could go
+  to Safari as Opus or AAC beside the video. Not built yet.

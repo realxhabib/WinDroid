@@ -4,7 +4,10 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-DATA = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "AndroidDesktop"
+# ANDROIDDESKTOP_DATA puts everything in another folder: a separate install, for testing. With
+# ANDROIDDESKTOP_SERIAL as well, it's an instance of its own, with its own Android (see SERIAL).
+DATA = Path(os.environ.get("ANDROIDDESKTOP_DATA") or
+            Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "AndroidDesktop")
 DOWNLOADS = DATA / "downloads"
 SDK = DATA / "sdk"
 AVD_HOME = DATA / "avd"

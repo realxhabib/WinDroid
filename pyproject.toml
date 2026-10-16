@@ -9,9 +9,11 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
+    "cryptography>=44",  # pairing (X25519) and the https:// certificates for iPhones and iPads
     "pillow>=11",
     "pywin32>=308",
     "pywebview>=5.4",
+    "segno>=1.6",  # the pairing QR code
 ]
 
 [project.gui-scripts]
@@ -22,7 +24,8 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["androiddesktop"]
+packages = ["androiddesktop", "androiddesktop.remote"]
 
 [tool.setuptools.package-data]
 androiddesktop = ["assets/*", "ui/*"]
+"androiddesktop.remote" = ["web/*"]

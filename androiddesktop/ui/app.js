@@ -20,7 +20,8 @@ let lastKey = "";
 function renderGrid() {
   const grid = $("grid");
   const apps = filtered();
-  const key = JSON.stringify([apps.map((a) => [a.pkg, a.label, a.running, a.v]), state.sel, state.vm.state]);
+  const away = (state.remote && state.remote.links) || {};
+  const key = JSON.stringify([apps.map((a) => [a.pkg, a.label, a.running, a.v, away[a.pkg]]), state.sel, state.vm.state]);
   if (key === lastKey) return;
   const first = lastKey === "";
   lastKey = key;
@@ -39,7 +40,8 @@ function renderGrid() {
     tile.className = "tile" + (app.running ? " running" : "") + (state.query && i === state.sel ? " sel" : "");
     tile.style.animationDelay = first ? `${Math.min(i, 24) * 18}ms` : "0ms";
     if (!first) tile.style.animation = "none";
-    tile.title = app.label;
+    tile.title = away[app.pkg] ? `${app.label} (on ${away[app.pkg].device})` : app.label;
+    if (away[app.pkg]) tile.classList.add("away");
     tile.dataset.pkg = app.pkg;
     tile.innerHTML = `<img src="${app.icon}" alt=""><span class="label"></span><span class="dot"></span><span class="launching"></span>`;
     tile.querySelector(".label").textContent = app.label;
@@ -69,7 +71,7 @@ function renderSetup() {
   const s = state.setup;
   const showSetup = !s.installed;
   $("setup").hidden = !showSetup;
-  $("home").hidden = showSetup;
+  $("home").hidden = showSetup || remoteOpen;
   $("dock").hidden = showSetup;
   $("setup-go").hidden = !!s.busy;
   $("setup-progress").hidden = !s.busy;
@@ -203,6 +205,122 @@ $("hello-dismiss").addEventListener("click", () => {
   $("hello").hidden = true;
 });
 
+// iPhone & iPad (remote/): pairing, paired devices, and devices asking to be allowed.
+let remoteOpen = false, qrTimer = 0, qrShown = false, pairedBefore = -1;
+function remote() { return state.remote || {}; }
+
+function openRemote(pair) {
+  remoteOpen = true;
+  $("remote").hidden = false;
+  $("home").hidden = true;
+  renderRemote();
+  if (pair && remote().enabled) showQr();
+}
+function closeRemote() {
+  remoteOpen = false;
+  $("remote").hidden = true;
+  $("home").hidden = !state.setup.installed;
+  hideQr();
+}
+
+async function showQr() {
+  clearTimeout(qrTimer);
+  const r = await api().remote_pair();
+  if (!remoteOpen) return;
+  if (r.error) { toast(r.error); hideQr(); return; }
+  qrShown = true;
+  pairedBefore = (remote().devices || []).length;
+  $("remote-qr").src = r.qr;
+  $("remote-url").textContent = r.url.replace(/#.*/, "");
+  $("remote-qr-box").hidden = false;
+  $("remote-pair").hidden = true;
+  qrTimer = setTimeout(showQr, (r.expires - 20) * 1000);  // a fresh code before this one runs out
+}
+function hideQr() {
+  clearTimeout(qrTimer);
+  if (qrShown) api().remote_pair_done();
+  qrShown = false;
+  $("remote-qr-box").hidden = true;
+  $("remote-pair").hidden = false;
+}
+
+function ago(t) {
+  if (!t) return "never";
+  const s = Date.now() / 1000 - t;
+  return s < 90 ? "just now" : s < 3600 ? `${Math.round(s / 60)} min ago` : s < 86400 ? `${Math.round(s / 3600)} h ago`
+    : new Date(t * 1000).toLocaleDateString();
+}
+
+function askCard(a) {
+  const el = document.createElement("div");
+  el.className = "notice ask";
+  el.innerHTML = `<span class="glyph"></span><div class="notice-text"><b></b>
+    <p>Allow it only if it shows this code:</p><div class="sas"></div>
+    <div class="notice-actions"><button class="primary small">Allow</button><button class="ghost">Deny</button></div></div>`;
+  el.querySelector("b").textContent = `${a.name} wants to use your Android apps`;
+  el.querySelector(".sas").textContent = a.code.replace(/(\d{3})/, "$1 ");
+  const [allow, deny] = el.querySelectorAll("button");
+  allow.addEventListener("click", () => api().remote_approve(a.id, true));
+  deny.addEventListener("click", () => api().remote_approve(a.id, false));
+  return el;
+}
+
+let lastRemote = "";
+function renderRemote() {
+  const r = remote();
+  $("remote-open").hidden = !state.setup.installed;
+  const asks = r.approvals || [];
+  for (const box of [$("home-asks"), $("remote-asks")]) {
+    box.innerHTML = "";
+    for (const a of asks) box.appendChild(askCard(a));
+  }
+  const key = JSON.stringify([r, remoteOpen]);
+  if (key === lastRemote) return;
+  lastRemote = key;
+  if (!remoteOpen) return;
+  $("remote-intro").hidden = !!r.enabled;
+  $("remote-main").hidden = !r.enabled;
+  $("remote-enable").disabled = !!r.error;
+  if (r.error) { $("remote-intro").querySelector("p").textContent = r.error; return; }
+  if (!r.enabled) return;
+  const problem = r.problem || (!r.listening ? "Getting ready..." : "");
+  $("remote-problem").hidden = !problem;
+  $("remote-problem-text").textContent = problem;
+  $("remote-firewall").hidden = r.firewall !== false || !problem.includes("Firewall");
+  $("remote-problem-detail").textContent = $("remote-firewall").hidden ? "" :
+    "Windows asks for administrator permission once, to let devices on your home network (only) reach WinDroid.";
+  $("remote-pair").disabled = !r.listening;
+  const devices = r.devices || [];
+  if (qrShown && devices.length > pairedBefore) { toast(`${devices[devices.length - 1].name} is paired`); hideQr(); }
+  $("remote-count").textContent = devices.length ? `${devices.length}` : "";
+  const list = $("remote-devices");
+  list.innerHTML = devices.length ? "" : '<p class="none">None yet.</p>';
+  for (const d of devices) {
+    const row = document.createElement("div");
+    row.className = "device";
+    row.innerHTML = `<span class="glyph"></span><div><b></b><p></p></div>
+      <button class="icon-btn" title="Remove"><span class="glyph"></span></button>`;
+    row.querySelector("b").textContent = d.name;
+    row.querySelector("p").textContent = (d.online ? "Connected" : `Last seen ${ago(d.last_seen)}`) +
+      (d.apps.length ? ` · ${d.apps.join(", ")}` : "");
+    if (d.online) row.classList.add("online");
+    row.querySelector("button").addEventListener("click", () => api().remote_remove(d.group));
+    list.appendChild(row);
+  }
+  $("remote-fp").textContent = r.fingerprint ? `On your device, this PC's certificate fingerprint starts ${r.fingerprint.slice(0, 23)}.` : "";
+}
+
+$("remote-open").addEventListener("click", () => openRemote(false));
+$("remote-close").addEventListener("click", closeRemote);
+$("remote-enable").addEventListener("click", () => { api().remote_enable(true); setTimeout(() => showQr(), 1500); });
+$("remote-disable").addEventListener("click", () => { hideQr(); api().remote_enable(false); });
+$("remote-pair").addEventListener("click", showQr);
+$("remote-firewall").addEventListener("click", async () => {
+  const b = $("remote-firewall");
+  b.disabled = true;
+  try { if (!(await api().remote_firewall())) toast("The firewall rule wasn't added"); } finally { b.disabled = false; }
+});
+
 // Called from Python with the latest state.
 window.ui = {
   update(patch) {
@@ -215,8 +333,10 @@ window.ui = {
     renderUnlock();
     renderHello();
     renderGrid();
+    renderRemote();
   },
   toast,
+  openRemote: () => openRemote(true),
 };
 
 // ------------------------------------------------------------ actions
@@ -241,6 +361,18 @@ function showMenu(app, x, y) {
     ["", app.inStart ? "Remove from Start" : "Pin to Start", () => api().toggle_start(app.pkg)],
     ["", "Add desktop shortcut", () => api().desktop_shortcut(app.pkg)],
   ];
+  const rs = remote();
+  if (state.remote && !rs.error) {
+    const link = (rs.links || {})[app.pkg];
+    const devices = rs.enabled ? (rs.devices || []).slice(0, 3) : [];
+    items.push(null);
+    if (link) items.push(["", `Bring back from ${link.device}`, () => api().remote_back(app.pkg)]);
+    else if (!devices.length) items.push(["", "Send to iPhone or iPad...", () => openRemote(true)]);
+    for (const d of link ? [] : devices) {
+      items.push(["", `Send to ${d.name}`, () => api().remote_send(app.pkg, d.group, "move")]);
+      if (app.running) items.push(["", `Show on ${d.name} too`, () => api().remote_send(app.pkg, d.group, "share")]);
+    }
+  }
   if (!app.system) items.push(null, ["", "Uninstall", () => api().uninstall(app.pkg), "danger"]);
   menu.innerHTML = "";
   for (const item of items) {
@@ -272,6 +404,7 @@ document.addEventListener("keydown", (e) => {
   const input = $("search");
   if (e.key === "Escape") {
     if (!$("menu").hidden) hideMenu();
+    else if (remoteOpen) closeRemote();
     else if (input.value) { input.value = ""; state.query = ""; renderGrid(); }
     else api().hide();
     return;

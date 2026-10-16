@@ -62,6 +62,7 @@
 
   <section class="home" id="home">
     <div class="notices" id="notices"></div>
+    <div id="home-asks"></div>
     <form class="unlock" id="unlock" hidden autocomplete="off">
       <span class="unlock-icon glyph">&#xE72E;</span>
       <div class="unlock-text">
@@ -108,9 +109,51 @@
     </div>
   </section>
 
+  <section class="remote" id="remote" hidden>
+    <header class="remote-head">
+      <button class="icon-btn" id="remote-close" title="Back"><span class="glyph">&#xE72B;</span></button>
+      <h2>iPhone &amp; iPad</h2>
+    </header>
+    <div class="remote-body">
+      <div id="remote-intro">
+        <p>Use your Android apps on your iPhone or iPad, full screen in Safari, over your home Wi-Fi. Send
+           one from its window's <span class="glyph inline">&#xE8EA;</span> button, and bring it back whenever you like.</p>
+        <ul class="facts">
+          <li><span class="glyph">&#xE72E;</span>Only devices you pair can connect</li>
+          <li><span class="glyph">&#xE701;</span>Only on your home network, never the internet</li>
+        </ul>
+        <button class="primary" id="remote-enable">Turn on</button>
+      </div>
+      <div id="remote-main">
+        <div class="notice" id="remote-problem" hidden>
+          <span class="glyph">&#xE946;</span>
+          <div class="notice-text"><b id="remote-problem-text"></b>
+            <p id="remote-problem-detail"></p>
+            <div class="notice-actions"><button class="ghost" id="remote-firewall" hidden>Allow</button></div>
+          </div>
+        </div>
+        <div id="remote-asks"></div>
+        <div class="pair-box" id="remote-qr-box" hidden>
+          <img id="remote-qr" alt="QR code for pairing">
+          <div>
+            <b>Scan with your iPhone's or iPad's Camera</b>
+            <p>Then tap the link that appears. The code works once, for 5 minutes.</p>
+            <code id="remote-url"></code>
+          </div>
+        </div>
+        <button class="primary" id="remote-pair">Pair an iPhone or iPad</button>
+        <div class="section-head"><h2>Paired</h2><span class="count" id="remote-count"></span></div>
+        <div class="devices" id="remote-devices"></div>
+        <p class="fine" id="remote-fp"></p>
+        <button class="ghost quiet" id="remote-disable">Turn off</button>
+      </div>
+    </div>
+  </section>
+
   <footer class="dock" id="dock">
     <button class="dock-btn" id="play"><img id="play-icon" alt=""><span>Get apps</span></button>
     <button class="dock-btn" id="apk"><span class="glyph">&#xE7B8;</span><span>Install APK</span></button>
+    <button class="dock-btn" id="remote-open"><span class="glyph">&#xE8EA;</span><span>iPhone &amp; iPad</span></button>
     <span class="spacer"></span>
     <button class="icon-btn" id="settings" title="Android settings"><span class="glyph">&#xE713;</span></button>
   </footer>

@@ -14,7 +14,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 import win32api
 import win32con
@@ -27,6 +27,9 @@ from .catalog import Catalog
 from .paths import INSTANCE
 from .protected import SecureScreens
 from .vm import LOCKED, RUNNING, VM
+
+if TYPE_CHECKING:
+    from .remote.hub import Hub
 
 AGENT_CLASS = "AndroidDesktop.Agent" + INSTANCE
 APP_CLASS = "AndroidDesktop.AppWindow"
@@ -77,6 +80,7 @@ class WindowManager:
         self.on_tray: Callable[[int], None] = lambda cmd: None
         self.on_notice: Callable[[str], None] = lambda text: log(text)  # something the user should hear about
         self.on_unlock: Callable[[AppWindow], None] = lambda win: None  # a window's "Unlock" button
+        self.remote: Hub | None = None  # apps on iPhones and iPads (remote/hub.py), when the agent has it
         self.listeners: list[Callable[[], None]] = []
         self._calls: queue.Queue = queue.Queue()
         self._ready = threading.Event()
