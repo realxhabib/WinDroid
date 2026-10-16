@@ -14,6 +14,11 @@ just one keyboard, which Android would send to whichever display has focus.
 The emulator's displays are secure, so FLAG_SECURE screens (Play's purchase sheet, PIN pads) show and
 take input as they are: protected.py is for scrcpy windows only.
 
+The emulator wakes every screenshot stream whenever any of its displays draws, and reads each one's
+display back from the GPU, changed or not: with a few windows open, a scrolling one would slow down
+for all the others. So only the window in use, and windows whose app is drawing something new, stream;
+the others look for something new a few times a second instead (Surface.wake, _poll).
+
 This needs an emulator started with -grpc and with its (hidden) Qt window, as vm.py starts it: a
 windowless emulator streams its extra displays at the main display's size. Without one, with every
 display slot taken, or without Direct3D, app windows use scrcpy.
@@ -41,30 +46,36 @@ from PIL import Image
 from . import adb, emudisplays, emugrpc, state
 from .catalog import HELPER
 from .emudisplays import (ALWAYS_UNLOCKED, DESTROY_CONTENT_ON_REMOVAL, OWN_CONTENT_ONLY, OWN_DISPLAY_GROUP,
-                          OWN_FOCUS, PUBLIC, ROTATES_WITH_CONTENT, SECURE, SUPPORTS_TOUCH, TOUCH_FEEDBACK_DISABLED,
+                          OWN_FOCUS, PUBLIC, SECURE, SUPPORTS_TOUCH, TOUCH_FEEDBACK_DISABLED,
                           TRUSTED)
 from .log import log
-from .paths import ADB_EXE, SERIAL, android_env
+from .paths import SERIAL
 
 if TYPE_CHECKING:
     from .appwindow import AppWindow
     from .catalog import App
 
 # scrcpy's flags for its app displays, plus SECURE. DESTROY_CONTENT_ON_REMOVAL: closing the window
-# closes the app, as with scrcpy.
-FLAGS = (PUBLIC | SECURE | OWN_CONTENT_ONLY | SUPPORTS_TOUCH | ROTATES_WITH_CONTENT | DESTROY_CONTENT_ON_REMOVAL |
-         TRUSTED | OWN_DISPLAY_GROUP | ALWAYS_UNLOCKED | TOUCH_FEEDBACK_DISABLED | OWN_FOCUS)
+# closes the app, as with scrcpy. Not ROTATES_WITH_CONTENT: the emulator hands over the display's
+# physical picture, so an app asking for landscape in a portrait window (or a portrait-only app in a
+# wide one) would show sideways. Without it Android shows such an app upright, letterboxed, and
+# shaping the window to suit lets it fill the window.
+FLAGS = (PUBLIC | SECURE | OWN_CONTENT_ONLY | SUPPORTS_TOUCH | DESTROY_CONTENT_ON_REMOVAL | TRUSTED |
+         OWN_DISPLAY_GROUP | ALWAYS_UNLOCKED | TOUCH_FEEDBACK_DISABLED | OWN_FOCUS)
 KEEP_FREE = 1  # display slots left for protected screens of scrcpy windows
 DEVICE_INPUT_JAR = "/data/local/tmp/androiddesktop-input.jar"  # its own copy: another checkout may push appcatalog.jar
 INPUT_VERSION = 1
 VIEW_CLASS = "AndroidDesktop.EmuView"
 FIRST_FRAME_SECS = 8
 RESIZE_DEBOUNCE_MS = 60
+LIVE_SECS = 2.0  # a window not in use stops streaming once its app hasn't drawn anything new for this long...
+POLL_SECS = 0.33  # ...and looks for something new this often instead
 TIMER_RESIZE = 1
 WM_XBUTTONUP, WM_MOUSEHWHEEL = 0x020C, 0x020E
 LAUNCH_FLAGS = 0x10200000  # FLAG_ACTIVITY_NEW_TASK | FLAG_ACTIVITY_RESET_TASK_IF_NEEDED, as a launcher starts apps
 
-user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+user32, kernel32, msvcrt = ctypes.windll.user32, ctypes.windll.kernel32, ctypes.CDLL("msvcrt")
+msvcrt.memcmp.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t]
 kernel32.CreateFileMappingW.restype = wt.HANDLE
 kernel32.CreateFileMappingW.argtypes = [wt.HANDLE, ctypes.c_void_p, wt.DWORD, wt.DWORD, wt.DWORD, wt.LPCWSTR]
 kernel32.MapViewOfFile.restype = ctypes.c_void_p
@@ -232,10 +243,9 @@ class Link:
     @staticmethod
     def _start_helper() -> subprocess.Popen:
         for attempt in range(2):
-            proc = subprocess.Popen(
-                [str(ADB_EXE), "-s", SERIAL, "shell", f"CLASSPATH={DEVICE_INPUT_JAR} app_process / InputHelper"],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=android_env(),
-                creationflags=adb.CREATE_NO_WINDOW)
+            # It ends when its stdin does, i.e. when we let go of it or this process ends.
+            proc = adb.start("shell", f"CLASSPATH={DEVICE_INPUT_JAR} app_process / InputHelper",
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             first = proc.stdout.readline().decode(errors="replace").strip()
             if first == f"ready {INPUT_VERSION}":
                 threading.Thread(target=Link._drain, args=(proc,), daemon=True, name="input-helper").start()
@@ -315,11 +325,16 @@ class Surface:
         self._renderer = None
         self._mapping = 0
         self._pixels = 0
-        self._pixels_lock = threading.Lock()
         self._capacity = 0
         self._handle = ""
         self._channel: emugrpc.Channel | None = None
         self._stream: emugrpc.Call | None = None
+        self._stream_token: object | None = None  # the stream whose frames count; None while not streaming
+        self._mode_lock = threading.Lock()
+        self._frame_lock = threading.Lock()
+        self._shown: ctypes.Array | None = None  # our copy of the frame on screen
+        self._last_change = 0.0
+        self._wake_until = 0.0
         self._restarts = 0
         self._want: tuple[tuple[int, int], int] | None = None
         self._resizing = False
@@ -394,59 +409,135 @@ class Surface:
         if not self._pixels:
             raise Unusable(f"shared memory: error {ctypes.GetLastError()}")
         self._handle = name
-        self._start_stream()
+        self._go_live()  # the app is starting: it draws
+        threading.Thread(target=self._poll, daemon=True, name=f"frames-{self.slot}").start()
         return self.view
 
-    def _start_stream(self) -> None:
-        try:
+    # ------------------------------------------------------------------ frames
+    def _connect(self) -> emugrpc.Channel:
+        if self._channel is None or self._channel.closed.is_set():
             self._channel = emugrpc.Channel(*self.point)
-            self._stream = self._channel.call(
-                "streamScreenshot", emugrpc.image_format(self.slot, emugrpc.RGBA8888, handle=self._handle),
-                on_message=self._on_frame, on_end=self._on_end)
-        except (OSError, emugrpc.GrpcError) as e:
-            self._on_end(f"can't connect: {e!r}")
+        return self._channel
 
-    # ------------------------------------------------------------------ frames (the stream's thread)
-    def _on_frame(self, message: memoryview) -> None:
+    @property
+    def live(self) -> bool:
+        return self._stream_token is not None
+
+    def wake(self) -> None:
+        """Any thread: the user is at this window: stream, for a while at least."""
+        self._wake_until = time.monotonic() + LIVE_SECS
+        if not self.live and not self.closed:
+            self._go_live()
+
+    def _go_live(self) -> None:
+        with self._mode_lock:
+            if self.live or self.closed:
+                return
+            token = self._stream_token = object()
+            try:
+                self._stream = self._connect().call(
+                    "streamScreenshot", emugrpc.image_format(self.slot, emugrpc.RGBA8888, handle=self._handle),
+                    on_message=lambda m: self._on_stream_frame(token, m), on_end=lambda e: self._on_end(token, e))
+                return
+            except (OSError, emugrpc.GrpcError) as e:
+                error = f"can't connect: {e!r}"
+        self._on_end(token, error)
+
+    def _go_idle(self) -> None:
+        with self._mode_lock:
+            call, self._stream, self._stream_token = self._stream, None, None
+        if call:
+            call.cancel()
+
+    def _keep_live(self) -> bool:
+        return (self.win.active or self._down or time.monotonic() < self._wake_until) and \
+            not win32gui.IsIconic(self.win.hwnd)
+
+    def _on_stream_frame(self, token: object, message: memoryview) -> None:
+        """The stream's thread: a frame is in shared memory."""
+        if token is not self._stream_token:
+            return
         width, height, _, _, _ = emugrpc.parse_image(message)
-        if self.closed or not width or not height or width * height * 4 > self._capacity:
-            return
-        self.frame = (width, height)
-        self.frames += 1
         self._restarts = 0
-        self._renderer.draw(self._pixels, width, height)
-        if not self.first_frame.is_set():
-            self.first_frame.set()
+        if not self._take(width, height) and not self._keep_live() and \
+                time.monotonic() - self._last_change > LIVE_SECS:
+            self._go_idle()
 
-    def _on_end(self, error: str) -> None:
-        if self.closed:
-            return
+    def _take(self, width: int, height: int) -> bool:
+        """Show the frame in shared memory, if it's new. True if it was."""
+        size = width * height * 4
+        if self.closed or not size or size > self._capacity:
+            return False
+        with self._frame_lock:
+            if self.closed:
+                return False
+            if (width, height) == self.frame and msvcrt.memcmp(self._shown, self._pixels, size) == 0:
+                return False
+            if self._shown is None or len(self._shown) < size:
+                self._shown = ctypes.create_string_buffer(size)
+            # Our own copy: the emulator may write the next frame into shared memory any time.
+            ctypes.memmove(self._shown, self._pixels, size)
+            self.frame = (width, height)
+            self.frames += 1
+            self._last_change = time.monotonic()
+            self._renderer.draw(ctypes.addressof(self._shown), width, height)
+        self.first_frame.set()
+        return True
+
+    def _poll(self) -> None:
+        """Thread: while not streaming, look for a new frame a few times a second."""
+        request = emugrpc.image_format(self.slot, emugrpc.RGBA8888, handle=self._handle)
+        while not self.closed:
+            time.sleep(POLL_SECS)
+            if self.live or self.closed or win32gui.IsIconic(self.win.hwnd):
+                continue
+            try:
+                reply = self._connect().unary("getScreenshot", request, timeout=5)
+            except (OSError, emugrpc.GrpcError) as e:
+                if not self.closed and not self._display_exists():
+                    log(f"{self.win.app.package}: emulator display {self.slot} lost: {e}")
+                    self.win.surface_lost(self)
+                    return
+                continue
+            fmt = emugrpc.unpb(emugrpc.first(reply, 1, b""))
+            if self._take(emugrpc.first(fmt, 3), emugrpc.first(fmt, 4)):
+                self._go_live()
+
+    def _display_exists(self) -> bool:
+        try:
+            return emudisplays.emulator_displays().get(self.slot) == self.display
+        except Exception:
+            return True  # can't tell: don't give up on it
+
+    def _on_end(self, token: object, error: str) -> None:
+        if self.closed or token is not self._stream_token:
+            return  # closing, or a stream we stopped on purpose
+        with self._mode_lock:
+            self._stream, self._stream_token = None, None
         # The emulator is still there and so is the display: just stream again.
         if self._restarts < 3 and self.display is not None:
             self._restarts += 1
             time.sleep(0.2 * self._restarts)
-            try:
-                if emudisplays.emulator_displays().get(self.slot) == self.display:
-                    log(f"{self.win.app.package}: frames stopped ({error or 'ended'}); streaming again")
-                    self._start_stream()
-                    return
-            except Exception:
-                pass
+            if self._display_exists():
+                log(f"{self.win.app.package}: frames stopped ({error or 'ended'}); streaming again")
+                self._go_live()
+                return
         log(f"{self.win.app.package}: emulator display {self.slot} lost: {error or 'stream ended'}")
         self.win.surface_lost(self)
 
     def redraw(self) -> None:
-        if self._renderer and self.frame[0]:
-            self._renderer.draw(self._pixels, *self.frame)
+        with self._frame_lock:
+            if self._renderer and self._shown is not None and self.frame[0]:
+                self._renderer.draw(ctypes.addressof(self._shown), *self.frame)
 
     def capture(self, width: int, height: int) -> Image.Image | None:
-        """The top left of the latest frame, e.g. for the window bar's color."""
-        fw, fh = self.frame
-        w, h = min(width, fw), min(height, fh)
-        with self._pixels_lock:
-            if not fw or not self._pixels:
+        """The top left of the frame on screen, e.g. for the window bar's color."""
+        with self._frame_lock:
+            fw, fh = self.frame
+            if not fw or self._shown is None:
                 return None
-            data = ctypes.string_at(self._pixels, fw * 4 * h)
+            w, h = min(width, fw), min(height, fh)
+            data = ctypes.string_at(self._shown, fw * 4 * h)
         return Image.frombuffer("RGBA", (fw, h), data, "raw", "RGBA", 0, 1).crop((0, 0, w, h)).convert("RGB")
 
     # ------------------------------------------------------------------ size
@@ -486,8 +577,7 @@ class Surface:
             if self.closed:
                 return
             self.closed = True
-        if self._stream:
-            self._stream.cancel()
+        self._go_idle()
         if self._channel:
             self._channel.close()
         if self.slot:
@@ -496,9 +586,9 @@ class Surface:
             except Exception as e:
                 if "invalid display id" not in str(e):  # it's gone already (Android went away)
                     log(f"{self.win.app.package}: removing emulator display {self.slot}: {e}")
-        if self._renderer:
-            self._renderer.close()  # after this, no frame reads the shared memory
-        with self._pixels_lock:
+        with self._frame_lock:  # after this, no frame reads the shared memory
+            if self._renderer:
+                self._renderer.close()
             if self._pixels:
                 kernel32.UnmapViewOfFile(self._pixels)
                 self._pixels = 0
@@ -612,6 +702,9 @@ class Surface:
         if msg == win32con.WM_TIMER and wp == TIMER_RESIZE:
             self._resize_display()
             return 0
+        if msg in (win32con.WM_LBUTTONDOWN, win32con.WM_RBUTTONDOWN, win32con.WM_MOUSEWHEEL, WM_MOUSEHWHEEL,
+                   win32con.WM_KEYDOWN, win32con.WM_SYSKEYDOWN, win32con.WM_CHAR):
+            self.wake()
         if msg == win32con.WM_LBUTTONDOWN:
             win32gui.SetFocus(hwnd)
             win32gui.SetCapture(hwnd)

@@ -1,6 +1,7 @@
 """End-to-end check of app windows against the real Android VM:
 
-    python tools/smoke_test.py [package]        # default: Clock
+    python tools/smoke_test.py [package]            # default: Clock
+    python tools/smoke_test.py --scrcpy [package]   # the scrcpy fallback, without emulator displays
 
 1. Android is up (it boots if needed) and unlocked.
 2. The app opens in its own window, on an emulator display (emuview.py) or scrcpy's video, and it
@@ -25,7 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from androiddesktop import adb, emudisplays, runtime, winapi  # noqa: E402
+from androiddesktop import adb, emudisplays, emuview, runtime, winapi  # noqa: E402
 
 winapi.dpi_aware()
 
@@ -149,9 +150,14 @@ def run(package: str) -> None:
 
         if win.surface:
             step("The emulator display's frames stop")
-            surface, frames = win.surface, win.surface.frames
-            surface._channel.close()
-            check(wait(lambda: win.surface is surface and surface.frames > frames, 10), "they come back on their own")
+            surface = win.surface
+            surface.wake()
+            channel = surface._channel
+            channel.close()
+            check(wait(lambda: surface.live and surface._channel is not channel, 10), "they stream again on their own")
+            frames = surface.frames
+            adb.shell(f"input -d {win.display_id} swipe 200 600 200 300 300")
+            check(wait(lambda: surface.frames > frames, 10), "and the app's next frames show")
             check(embedded(win) and win.display_id == surface.display, "in the same window, on the same display")
         step("The display goes away (as if Android crashed)" if win.surface else "scrcpy crashes")
         gen, display, started = win._gen, win.display_id, time.monotonic()
@@ -181,7 +187,11 @@ def run(package: str) -> None:
 
 
 def main() -> int:
-    run(sys.argv[1] if len(sys.argv) > 1 else "com.google.android.deskclock")
+    args = sys.argv[1:]
+    if "--scrcpy" in args:
+        args.remove("--scrcpy")
+        emuview.link.usable = lambda: None
+    run(args[0] if args else "com.google.android.deskclock")
     print("\nFAILED:\n  " + "\n  ".join(failures) if failures else "\nAll checks passed.")
     return 1 if failures else 0
 

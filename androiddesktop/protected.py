@@ -17,6 +17,10 @@ scrcpy takes over again.
 
 The secure display also shows Android's secondary home screen, under the app: a display with no task
 on it counts as asleep, and a task moved onto a sleeping display stays hidden.
+
+All this is for scrcpy windows. App windows on the emulator's own displays (emuview.py) need none
+of it: those displays are secure already. And it only looks when Android says a window got focus or
+an activity came to the front (its event log), or now and then to be sure.
 """
 from __future__ import annotations
 
@@ -53,6 +57,10 @@ WM_XBUTTONUP = 0x020C
 TIMER_RESIZE, TIMER_MOVE = 1, 2
 MOVE_EVERY = 0.03  # seconds between forwarded drag moves
 SHOTS = DATA / "protected"  # the emulator saves its screenshots here, one folder per display
+LOOK_EVERY = 1.5  # seconds between looks while a secure screen is up, and after Android's window events
+LOOK_IDLE = 15.0  # ...and otherwise, in case a window turned secure without any event
+# Android's event log: a window got input focus, an activity came to the front.
+EVENTS = "logcat -b events -v brief -T 1 -s input_focus:I wm_set_resumed_activity:I"
 
 # DisplayManager.VIRTUAL_DISPLAY_FLAG_*: what scrcpy asks for, plus SECURE and system decorations.
 FLAGS = (1 << 0      # PUBLIC
@@ -167,31 +175,64 @@ class SecureScreens:
 
     def __init__(self, manager: WindowManager) -> None:
         self.manager = manager
+        self._wake = threading.Event()
+        self._events: subprocess.Popen | None = None
 
     def start(self) -> None:
         threading.Thread(target=self._watch, daemon=True, name="secure-watch").start()
 
     def _watch(self) -> None:
         tidy = self.manager.ipc  # a test harness leaves the agent's displays alone
+        due, follow_ups = 0.0, 0
         while True:
-            time.sleep(1.5)
+            if self._wake.wait(max(0.0, due - time.monotonic())):
+                self._wake.clear()
+                time.sleep(0.3)  # let the new window settle
+                follow_ups = 2  # and look again a little later: secure windows may take a moment
+            due = time.monotonic() + LOOK_EVERY
             if self.manager.vm.state != RUNNING:
                 tidy = self.manager.ipc
+                self._stop_events()
                 continue
             # Windows on the emulator's own displays need none of this: those displays are secure.
             wins = [w for w in list(self.manager.windows.values()) if not w.closing and w.status == WINDOW_RUNNING
                     and w.child and w.display_id is not None and w.surface is None]
             if not wins and not tidy:
+                self._stop_events()
                 continue
             try:
                 if tidy:
                     self._remove_strays()
                     tidy = False
+                if not wins:
+                    continue
+                self._start_events()
                 secure = secure_displays()
                 for w in wins:
                     self._check(w, secure)
             except Exception as e:
                 log(f"protected: watch: {e!r}")
+            if follow_ups:
+                follow_ups -= 1
+            elif not any(w.protected for w in wins):
+                due = time.monotonic() + LOOK_IDLE
+
+    def _start_events(self) -> None:
+        if self._events and self._events.poll() is None:
+            return
+        self._events = proc = adb.start("shell", EVENTS, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                        stdin=subprocess.DEVNULL)
+        threading.Thread(target=self._read_events, args=(proc,), daemon=True, name="secure-events").start()
+
+    def _read_events(self, proc: subprocess.Popen) -> None:
+        for line in proc.stdout:
+            if not line.startswith(b"-"):  # "--------- beginning of events"
+                self._wake.set()
+
+    def _stop_events(self) -> None:
+        if self._events and self._events.poll() is None:
+            self._events.kill()
+        self._events = None
 
     def _check(self, w: AppWindow, secure: set[int]) -> None:
         p = w.protected
@@ -212,7 +253,8 @@ class SecureScreens:
 
     @staticmethod
     def _remove_strays() -> None:
-        """Secure displays left over from an agent that didn't get to tidy up."""
+        """Emulator displays (app windows', secure screens') left over from an agent that didn't get to
+        tidy up."""
         stray = set(emulator_displays()) - emudisplays.ours()
         for slot in stray:
             log(f"protected: removing leftover emulator display {slot}")

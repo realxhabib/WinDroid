@@ -777,6 +777,8 @@ class AppWindow:
             return 0
         if msg == win32con.WM_ACTIVATE:
             self.active = (wp & 0xFFFF) != win32con.WA_INACTIVE
+            if self.active and self.surface:
+                self.surface.wake()
             if self.active and self.child:
                 winapi.user32.SetFocus(self.view)
             self._repaint_bar()

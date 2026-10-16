@@ -8,9 +8,11 @@ the sensor with the enrolled finger.
 
 What's waiting for a finger: Android's BiometricScheduler, in `dumpsys fingerprint`, runs one client
 at a time: an authentication (a BiometricPrompt in an app, Play purchases, passkeys, the lock
-screen) or an enrollment (Settings adding a fingerprint). Its owner is the package that asked. Lines
-from Android's biometric services in logcat tell us when to look again, so prompts are noticed at
-once without polling dumpsys all the time.
+screen) or an enrollment (Settings adding a fingerprint). Its owner is the package that asked. The
+scheduler logs each operation as it's added, starts and finishes, so we look only then: logcat,
+filtered to the scheduler's own tags inside Android, wakes us. (Not on every line that mentions
+biometrics: apps and SystemUI ask BiometricService "can I authenticate?" all the time, and every new
+Java process logs its biometrics flags.)
 """
 from __future__ import annotations
 
@@ -25,7 +27,6 @@ import win32gui
 
 from . import adb, hello
 from .log import log
-from .paths import ADB_EXE, SERIAL, android_env
 from .vm import RUNNING
 
 if TYPE_CHECKING:
@@ -35,8 +36,12 @@ if TYPE_CHECKING:
 FINGER = 1  # the finger we enroll and touch with
 LOCK_SCREEN = "com.android.systemui"  # owner of the lock screen's fingerprint listening
 ENROLL_WINDOW = 10 * 60  # seconds "Set up fingerprint" keeps touching for enrollment
-POLL = 5.0  # seconds between checks when logcat says nothing
-WAKE = re.compile(r"biometric|fingerprint|AuthController|AuthSession", re.I)
+HEALTH = 10.0  # seconds between checks that the log watcher still runs (no dumpsys unless something was logged)
+# The scheduler's operations and enrollment changes (system_server), and the prompt dialog (SystemUI).
+LOG_TAGS = ("BiometricScheduler", "BiometricSchedulerOperation", "BiometricStateCallback", "AuthSession",
+            "AuthController")
+LOGCAT = "logcat -v brief -T 1 -s " + " ".join(f"{tag}:V" for tag in LOG_TAGS)
+WAKE = re.compile(r"^[VDIWEF]/(" + "|".join(LOG_TAGS) + r")\b")
 
 # BiometricSchedulerOperation states (State: N)
 WAITING_IN_QUEUE, WAITING_FOR_COOKIE, STARTED = 0, 1, 2
@@ -141,6 +146,8 @@ class Bridge:
         self._handled: set[int] = set()  # operations we've asked Windows Hello about
         self._touched: dict[int, int] = {}  # enrollment touches given, per operation
         self._logcat: subprocess.Popen | None = None
+        self.current: Operation | None = None  # what the sensor was doing at the last look
+        self._spawn = lambda fn, *args: threading.Thread(target=fn, args=args, daemon=True, name="hello").start()
 
     def start(self) -> None:
         threading.Thread(target=self._watch, daemon=True, name="fingerprint").start()
@@ -175,8 +182,10 @@ class Bridge:
                 self._stop_logcat()
                 time.sleep(2)
                 continue
-            self._ensure_logcat()
-            self._wake.wait(POLL)
+            if self._ensure_logcat():
+                self._wake.set()  # look once: something may have started before we listened
+            if not self._wake.wait(HEALTH):
+                continue
             self._wake.clear()
             time.sleep(0.15)  # let a burst of log lines settle
             try:
@@ -185,16 +194,15 @@ class Bridge:
                 log(f"fingerprint: {e!r}")
                 time.sleep(2)
 
-    def _ensure_logcat(self) -> None:
+    def _ensure_logcat(self) -> bool:
+        """Start the log watcher if it isn't running. True if it was just (re)started."""
         if self._logcat and self._logcat.poll() is None:
-            return
-        # -T 1: from now on. The device's grep keeps the traffic down to biometric news.
-        self._logcat = subprocess.Popen(
-            [str(ADB_EXE), "-s", SERIAL, "shell",
-             "logcat -v brief -T 1 | grep --line-buffered -iE 'biometric|fingerprint|AuthController|AuthSession'"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, env=android_env(),
-            creationflags=adb.CREATE_NO_WINDOW, text=True, encoding="utf-8", errors="replace")
+            return False
+        # -T 1: from now on. -s with the tags: logd itself drops everything else.
+        self._logcat = adb.start("shell", LOGCAT, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                 stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="replace")
         threading.Thread(target=self._read_logcat, args=(self._logcat,), daemon=True, name="fingerprint-log").start()
+        return True
 
     def _read_logcat(self, proc: subprocess.Popen) -> None:
         for line in proc.stdout:
@@ -208,6 +216,7 @@ class Bridge:
 
     def _check(self) -> None:
         op, enrolled = fingerprint_state()
+        self.current = op
         if enrolled != self.enrolled:
             before, self.enrolled = self.enrolled, enrolled
             log(f"fingerprint: {enrolled} enrolled in Android")
@@ -222,7 +231,7 @@ class Bridge:
             self._enroll_touch(op)
         elif op.kind == "auth" and op.started and op.seq not in self._handled and self.available and enrolled:
             self._handled.add(op.seq)
-            self._prompt(op)
+            self._spawn(self._prompt, op)  # the watcher keeps watching, to see the prompt go away
 
     def _enroll_touch(self, op: Operation) -> None:
         """Android's enrollment wants the finger several times: give it once per check, until it's done."""
@@ -247,7 +256,9 @@ class Bridge:
             log(f"fingerprint: {op.owner} asks for a fingerprint, but no window of ours is open")
             return
         log(f"fingerprint: {op.owner} asks for a fingerprint (operation {op.seq}); asking Windows Hello")
-        result = hello.verify(hwnd, what, wanted=lambda: self._still_asking(op))
+        # Asked about once a second: answered from the watcher's last look, which the scheduler's
+        # log lines keep current, rather than a dumpsys each time.
+        result = hello.verify(hwnd, what, wanted=lambda: self.current is not None and self.current.seq == op.seq)
         if not self._still_asking(op):
             log("fingerprint: the prompt went away meanwhile")
             return
