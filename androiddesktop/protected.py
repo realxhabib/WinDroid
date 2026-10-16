@@ -34,9 +34,10 @@ import win32con
 import win32gui
 from PIL import Image, ImageDraw
 
-from . import adb, winapi
+from . import adb, emudisplays, winapi
 from .appwindow import RUNNING as WINDOW_RUNNING, mix, on_color
 from .catalog import DEVICE_HELPER, HELPER
+from .emudisplays import emu, emulator_displays
 from .log import log
 from .paths import ADB_EXE, DATA, SERIAL, android_env
 from .vm import RUNNING
@@ -65,7 +66,6 @@ FLAGS = (1 << 0      # PUBLIC
          | 1 << 12   # ALWAYS_UNLOCKED
          | 1 << 13   # TOUCH_FEEDBACK_DISABLED
          | 1 << 14)  # OWN_FOCUS
-MAX_SLOTS = 8  # "valid ids are from 1 to 8 inclusive", says `emu multidisplay add` (emulator 37)
 
 OPENING, SHOWING, FAILED, ENDING = "opening", "showing", "failed", "ending"
 
@@ -82,8 +82,6 @@ VK_TO_KEYCODE = {
 }
 KEYCODE_BACK, KEYCODE_SPACE, KEYCODE_SHIFT_LEFT, KEYCODE_CTRL_LEFT, KEYCODE_A = 4, 62, 59, 113, 29
 
-_slots: set[int] = set()  # emulator displays in use by this process
-_slots_lock = threading.Lock()
 _reset_lock = threading.Lock()
 _views: dict[int, Protected] = {}
 _class_registered = False
@@ -104,17 +102,6 @@ def parse_metrics(out: str) -> tuple[int, int, int]:
     """`wm size; wm density`: width, height and density (an override, if set, is listed last)."""
     w, h = re.findall(r"size: (\d+)x(\d+)", out)[-1]
     return int(w), int(h), int(re.findall(r"density: (\d+)", out)[-1])
-
-
-def parse_emulator_displays(dumpsys_display: str) -> dict[int, int]:
-    """`dumpsys display`: the emulator's extra displays, slot -> Android display id."""
-    found = {}
-    for line in dumpsys_display.splitlines():
-        m = re.search(r'DisplayInfo\{"[^"]*", displayId (\d+),.*?uniqueId '
-                      r'"virtual:com\.android\.emulator\.multidisplay:(\d+)"', line)
-        if m:
-            found[int(m.group(2)) - 1234561] = int(m.group(1))  # slot 1 is "1234562"
-    return found
 
 
 def text_commands(text: str) -> list[tuple[str, ...]]:
@@ -148,10 +135,6 @@ def display_metrics(display: int) -> tuple[int, int, int]:
     return parse_metrics(adb.shell(f"wm size -d {display}; wm density -d {display}", timeout=10))
 
 
-def emulator_displays() -> dict[int, int]:
-    return parse_emulator_displays(adb.shell("dumpsys display", timeout=10))
-
-
 def reset_secure_state() -> None:
     """Undo a sticky "every layer is secure" state SurfaceFlinger can get into after a screenshot of
     a secure layer, which turns every app window black and deaf (see helper/src/SecureReset.java)."""
@@ -178,14 +161,6 @@ def reset_secure_state_soon() -> None:
     threading.Thread(target=run, daemon=True, name="secure-reset").start()
 
 
-def emu(*args: str) -> str:
-    """An emulator console command; raises if the emulator refuses it."""
-    out = adb.run("emu", *args, timeout=15).stdout.strip()
-    if not out.endswith("OK"):
-        raise RuntimeError(f"emu {' '.join(args)}: {out or 'no answer'}")
-    return out
-
-
 # ---------------------------------------------------------------------- watcher
 class SecureScreens:
     """Watches the app windows' displays for secure windows and hands each one to a Protected."""
@@ -203,8 +178,9 @@ class SecureScreens:
             if self.manager.vm.state != RUNNING:
                 tidy = self.manager.ipc
                 continue
-            wins = [w for w in list(self.manager.windows.values())
-                    if not w.closing and w.status == WINDOW_RUNNING and w.child and w.display_id is not None]
+            # Windows on the emulator's own displays need none of this: those displays are secure.
+            wins = [w for w in list(self.manager.windows.values()) if not w.closing and w.status == WINDOW_RUNNING
+                    and w.child and w.display_id is not None and w.surface is None]
             if not wins and not tidy:
                 continue
             try:
@@ -237,8 +213,7 @@ class SecureScreens:
     @staticmethod
     def _remove_strays() -> None:
         """Secure displays left over from an agent that didn't get to tidy up."""
-        with _slots_lock:
-            stray = set(emulator_displays()) - _slots
+        stray = set(emulator_displays()) - emudisplays.ours()
         for slot in stray:
             log(f"protected: removing leftover emulator display {slot}")
             try:
@@ -295,27 +270,9 @@ class Protected:
         with self._lock:
             try:
                 w, h, self.density = display_metrics(self.source)
-                taken = set(emulator_displays())  # another agent's too, e.g. a test harness
-                with _slots_lock:
-                    free = [s for s in range(1, MAX_SLOTS + 1) if s not in _slots | taken]
-                    if not free:
-                        raise RuntimeError("no free emulator display")
-                    self.slot = free[0]
-                    _slots.add(self.slot)
+                self.slot = emudisplays.claim()
                 self.size = (w, h)
-                for _ in range(4):
-                    try:
-                        emu("multidisplay", "add", str(self.slot), str(w), str(h), str(self.density), str(FLAGS))
-                        break
-                    except RuntimeError as e:
-                        # A windowless emulator answers "KO: setMultiDisplay not supported" but makes
-                        # the display anyway, so what counts is whether it turns up. (The first request
-                        # after Android starts may also only wake its MultiDisplayProvider: ask again.)
-                        if "not supported" not in str(e):
-                            raise
-                        time.sleep(1.5)
-                        if emulator_displays().get(self.slot) is not None:
-                            break
+                emudisplays.add(self.slot, w, h, self.density, FLAGS)
                 end = time.monotonic() + 10
                 while (display := emulator_displays().get(self.slot)) is None or not root_tasks(display):
                     if time.monotonic() > end:
@@ -398,11 +355,9 @@ class Protected:
         if not self.slot:
             return
         try:
-            emu("multidisplay", "del", str(self.slot))
+            emudisplays.remove(self.slot)
         except Exception as e:
             log(f"protected: {e}")
-        with _slots_lock:
-            _slots.discard(self.slot)
         self.slot, self.display = 0, None
 
     def _finish(self) -> None:
@@ -496,11 +451,11 @@ class Protected:
         if self.state != SHOWING or (w, h) == self.size or w < 50 or h < 50:
             return
         self.size = (w, h)
-        args = ("multidisplay", "add", str(self.slot), str(w), str(h), str(self.density), str(FLAGS))
+        slot, density = self.slot, self.density
 
         def resize() -> None:
             try:
-                emu(*args)  # same slot and flags: the emulator resizes the display in place
+                emudisplays.resize(slot, w, h, density, FLAGS)
             except Exception as e:
                 log(f"protected: {e}")
         threading.Thread(target=resize, daemon=True).start()

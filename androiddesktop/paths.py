@@ -15,6 +15,7 @@ STATE = DATA / "state.json"
 
 AVD_NAME = "AndroidDesktop"
 EMULATOR_PORT = 5584  # off the default 5554 so we never collide with a developer's own emulator
+GRPC_PORT = EMULATOR_PORT + 3000  # the emulator's gRPC control API (emuview.py)
 # ANDROIDDESKTOP_SERIAL points everything at another Android, e.g. a developer's test emulator. That
 # Android then gets an agent of its own (INSTANCE), apart from the user's.
 SERIAL = os.environ.get("ANDROIDDESKTOP_SERIAL") or f"emulator-{EMULATOR_PORT}"

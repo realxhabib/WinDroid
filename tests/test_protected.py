@@ -1,7 +1,8 @@
 """What protected.py reads from Android, and how it types text."""
 import unittest
 
-from androiddesktop.protected import (FLAGS, parse_emulator_displays, parse_metrics, parse_root_tasks,
+from androiddesktop.emudisplays import parse_emulator_displays
+from androiddesktop.protected import (FLAGS, parse_metrics, parse_root_tasks,
                                       parse_secure_displays, text_commands)
 
 # Trimmed from a real `dumpsys display`: scrcpy's display 3 and the emulator's display in slot 1.

@@ -34,7 +34,7 @@ import win32api  # noqa: E402
 import win32con  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from . import adb, biometrics, checks, ghost, hello, runtime, shortcuts  # noqa: E402
+from . import adb, biometrics, checks, emuview, ghost, hello, runtime, shortcuts  # noqa: E402
 from .catalog import Catalog  # noqa: E402
 from .log import log, log_uncaught  # noqa: E402
 from .manager import TRAY_OPEN, TRAY_QUIT, TRAY_STOP, WindowManager, send_to_agent  # noqa: E402
@@ -418,6 +418,8 @@ class Agent:
     def _on_vm(self, vm_state: str) -> None:
         changed, self._vm_state = vm_state != self._vm_state, vm_state
         self.push(apps=False)
+        if changed and vm_state == OFF:
+            emuview.link.close()  # the input helper's adb shell, and the gRPC connection
         if changed and vm_state in (OFF, RUNNING):  # a failed boot may have a reason worth showing
             threading.Thread(target=self.recheck, daemon=True).start()
         if vm_state == RUNNING:

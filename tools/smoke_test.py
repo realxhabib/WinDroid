@@ -3,14 +3,18 @@
     python tools/smoke_test.py [package]        # default: Clock
 
 1. Android is up (it boots if needed) and unlocked.
-2. The app opens in its own window, scrcpy's video is embedded in it, and it draws a picture.
+2. The app opens in its own window, on an emulator display (emuview.py) or scrcpy's video, and it
+   draws a picture.
 3. Resizing the window resizes the app.
-4. Killing scrcpy (as if it crashed) makes the window reconnect, with the app on a fresh display.
-5. Closing the window ends scrcpy and removes Android's display.
+4. The window's display going away (scrcpy killed, or the emulator display removed, as if Android
+   crashed) makes the window reconnect, with the app on a fresh display. On an emulator display,
+   losing the frame stream alone just streams again.
+5. Closing the window ends scrcpy or the emulator display, and Android's display goes away.
 
 The windows live in this process, so the new window code is tested even while an agent runs, and a
-running agent is left alone. Typing isn't covered: that needs real keyboard input. Exit code 0 when
-everything passed.
+running agent is left alone. With ANDROIDDESKTOP_SERIAL pointing at a test emulator, start that
+emulator first: this never boots one then. Typing isn't covered: that needs real keyboard input. Exit
+code 0 when everything passed.
 """
 from __future__ import annotations
 
@@ -21,7 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from androiddesktop import adb, runtime, winapi  # noqa: E402
+from androiddesktop import adb, emudisplays, runtime, winapi  # noqa: E402
 
 winapi.dpi_aware()
 
@@ -32,6 +36,7 @@ from PIL import ImageStat  # noqa: E402
 from androiddesktop.appwindow import RUNNING, AppWindow  # noqa: E402
 from androiddesktop.catalog import Catalog  # noqa: E402
 from androiddesktop.manager import WindowManager  # noqa: E402
+from androiddesktop.paths import EMULATOR_PORT, SERIAL  # noqa: E402
 from androiddesktop.vm import LOCKED, VM  # noqa: E402
 
 failures: list[str] = []
@@ -66,7 +71,7 @@ def draws_picture(win: AppWindow) -> bool:
     if not win.child:
         return False
     _, _, w, h = win32gui.GetClientRect(win.child)
-    img = winapi.capture(win.child, w, h)
+    img = win.surface.capture(w, h) if win.surface else winapi.capture(win.child, w, h)
     return img is not None and ImageStat.Stat(img.convert("L")).stddev[0] > 4
 
 
@@ -99,6 +104,10 @@ def run(package: str) -> None:
     step("Android")
     started = time.monotonic()
     vm = VM()
+    if SERIAL != f"emulator-{EMULATOR_PORT}":
+        if not check(adb.online() and adb.booted(), f"the test Android {SERIAL} is up (start it first)"):
+            return
+        vm._boot = lambda: vm._set("off", "not booting the user's Android for a test")  # never, here
     up = vm.ensure_running(timeout=900, wait_for_unlock=False)
     if vm.state == LOCKED:
         check(False, "Android is unlocked (it's locked: enter the PIN in the launcher, then run this again)")
@@ -138,9 +147,18 @@ def run(package: str) -> None:
         check(after, f"Android's display follows ({before} -> {after})")
         win32gui.SetWindowPos(win.hwnd, 0, l, t, r - l, b - t, win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE)
 
-        step("scrcpy crashes")
+        if win.surface:
+            step("The emulator display's frames stop")
+            surface, frames = win.surface, win.surface.frames
+            surface._channel.close()
+            check(wait(lambda: win.surface is surface and surface.frames > frames, 10), "they come back on their own")
+            check(embedded(win) and win.display_id == surface.display, "in the same window, on the same display")
+        step("The display goes away (as if Android crashed)" if win.surface else "scrcpy crashes")
         gen, display, started = win._gen, win.display_id, time.monotonic()
-        win.proc.kill()
+        if win.surface:
+            emudisplays.emu("multidisplay", "del", str(win.surface.slot))
+        else:
+            win.proc.kill()
         check(wait(lambda: win.status != RUNNING, 5, 0.02), f"the window notices ({win.status})")
         check(win32gui.IsWindow(win.hwnd), "and stays open")
         check(wait(lambda: embedded(win) and win._gen != gen, 60), f"the app is back ({time.monotonic() - started:.1f}s)")
@@ -151,10 +169,14 @@ def run(package: str) -> None:
         check(manager.windows.get(package) is win and embedded(win), "it stays open")
     finally:
         step("Close")
-        hwnd, proc, display = win.hwnd, win.proc, win.display_id
+        hwnd, proc, display, surface = win.hwnd, win.proc, win.display_id, win.surface
         win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
         check(wait(lambda: not win32gui.IsWindow(hwnd), 10), "the window closes")
-        check(proc is None or wait(lambda: proc.poll() is not None, 10), "scrcpy ends")
+        if surface:
+            check(wait(lambda: surface.slot not in emudisplays.emulator_displays(), 10, 0.5),
+                  f"the emulator display ({surface.slot}) is gone")
+        else:
+            check(proc is None or wait(lambda: proc.poll() is not None, 10), "scrcpy ends")
         check(wait(lambda: display_size(display) is None, 10, 0.5), "Android removes the display")
 
 
