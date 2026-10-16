@@ -43,7 +43,7 @@ from .appwindow import RUNNING as WINDOW_RUNNING, mix, on_color
 from .catalog import DEVICE_HELPER, HELPER
 from .emudisplays import emu, emulator_displays
 from .log import log
-from .paths import ADB_EXE, DATA, SERIAL, android_env
+from .paths import DATA
 from .vm import RUNNING
 
 if TYPE_CHECKING:
@@ -334,9 +334,8 @@ class Protected:
                 if not set(tasks) <= set(self.app_tasks()):
                     raise RuntimeError(f"tasks {tasks} didn't move to display {display}")
                 reset_secure_state_soon()
-                self._shell = subprocess.Popen([str(ADB_EXE), "-s", SERIAL, "shell"], stdin=subprocess.PIPE,
-                                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                               env=android_env(), creationflags=adb.CREATE_NO_WINDOW)
+                self._shell = adb.start("shell", stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL)
                 log(f"{self.win.app.package}: secure screen on display {display} (emulator display "
                     f"{self.slot}, {w}x{h}/{self.density}), tasks {tasks}")
                 if self.state == OPENING:

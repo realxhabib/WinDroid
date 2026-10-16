@@ -33,7 +33,7 @@ import win32gui
 import win32process
 from PIL import Image, ImageDraw, ImageFilter
 
-from . import adb, emuview, state, winapi
+from . import adb, children, emuview, state, winapi
 from .catalog import App
 from .log import log
 from .paths import LOGS, SERIAL, android_env
@@ -302,9 +302,10 @@ class AppWindow:
                 if self.closing or gen != self._gen:
                     return
                 self.display_id = None
-                self.proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                             env=android_env(), creationflags=adb.CREATE_NO_WINDOW, text=True,
-                                             encoding="utf-8", errors="replace")
+                # Ends with us, however we end: without its window, scrcpy is no use to anyone.
+                self.proc = children.popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                           env=android_env(), creationflags=adb.CREATE_NO_WINDOW, text=True,
+                                           encoding="utf-8", errors="replace")
                 threading.Thread(target=self._read_output, args=(self.proc, gen), daemon=True).start()
                 end = time.monotonic() + 30
                 while self.display_id is None and self._shown != gen:
