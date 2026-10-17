@@ -32,6 +32,9 @@ drag, snap, pin to the taskbar or maximize like any other Windows app.
 - **On your iPhone or iPad.** Send one app (not the whole of Android) to your iPhone or iPad over
   your home Wi-Fi. It runs full screen in Safari, by touch, sized to the device and following its
   rotation, and comes back to its window when you like.
+- **Plugins.** Companions that attach to a particular app's window: a side panel glued to its edge
+  and pop-ups on the app itself. The first one, **Hinge Matcher**, suggests which card to like and
+  writes openers and replies with Claude, and fills them in for you to send.
 
 Everything runs locally.
 
@@ -268,6 +271,63 @@ The certificate authority your device trusts is limited to private network addre
 for any website, and its key stays on the PC, encrypted for your Windows account. Before step 3 the
 video itself travels unencrypted on your Wi-Fi.
 
+### Plugins: Hinge Matcher
+
+Open Hinge in its window and a dock appears glued to the window's side. On **Discover**, within
+about ten seconds of a profile opening, it shows who they seem to be, which card Claude would like
+and why, and three openers (witty, funny, cute), from the part of the profile on screen. Meanwhile it
+scrolls through the whole profile once, reading every card, and back to the top; the ideas are then
+written again from all of it (unless you've started using the first ones). After that, scrolling
+changes nothing: the ideas only change when you ask. On Hinge itself, the card it picked glows, with
+the current idea in a bubble on it, against its right side and clear of their words and the heart as
+far as the card allows; both follow the card as you scroll. Point at the bubble and it fades to let
+you read what's under it; the eye in the dock (or **Alt+Q** on the Hinge window) hides it altogether,
+and that sticks. In a **chat** you get three reply ideas instead, written for where the conversation
+stands; there the bubble goes in an empty stretch above the message box, off the messages (with no
+room, over the oldest ones on screen). A message too short for the whole-screen read ("Hey") gets its
+bubble read on its own, and Hinge's notes ("You liked their photo", "Double tap to like") count as how
+the chat started, not as messages.
+
+- **It fills in, you tap.** Tap ♥ on a card in Hinge so the comment box opens, then click an idea
+  in the dock (or press **Alt+Enter** on the Hinge window): it goes into the box exactly as written,
+  and the plugin checks the box shows it. Read it over, then press **Send like** yourself. Clicked an
+  idea before opening the box? It waits, and goes in as soon as the box opens. In a chat, it goes into
+  the message box. The plugin never presses Like, Send or Skip, and never sends anything.
+- **Go to a card.** Click a card in the dock (Photo 2, Prompt 1…, numbered as on the page), an
+  idea's "on prompt …", or the pick's "Like their …", and Hinge scrolls to it: steered by which cards
+  are on screen after each move, with the same margin drags as the read. Photo 1 is the top.
+- **It remembers.** Resizing or moving the window keeps everything: what was read, the ideas, where
+  you were. The card positions are scaled to the new width and put right as each card shows again,
+  so nothing is read or written twice. A profile seen in the last half hour that shows again (back
+  from a chat) gets its ideas back, unless its cards turn out to say something else.
+- **Shape the ideas.** Hover an idea to see it on its card. **Alt+←/→** on the Hinge window cycles
+  them. The pencil edits one before it goes in. The slider leans playful or sincere, **Shorter** /
+  **Longer** sets the length, and **New ideas** writes three more, following anything you type in
+  "Tell Claude…" ("mention I cook"). **Skip** notes the pass in the history; you tap ✕ in Hinge.
+- **Unnoticed.** It reads Hinge from screenshots of its window, taken on the PC, and Windows' own
+  OCR: nothing runs inside Android, and the accessibility service stays off. An idea goes in through
+  the window's own keyboard, the virtual keyboard yours uses: pasted (Ctrl+V, after scrcpy copies the
+  text to Android), which keeps it exact. Typed key by key, Android's keyboard app auto-corrects and
+  capitalises depending on timing ("can i" became "Can I", and keys went missing), so typing is only
+  an option: `"insert": "type"` in the config. Your clipboard is put back afterwards. Reading
+  the whole profile is a finger dragging the page up a little under half a screen at a time, in the
+  page's left margin where no card, video or button can take the touch, and a few flicks back to the
+  top: the touches a mouse drag in the window makes. It stops if you scroll, tap ♥ or move on; a
+  passing frame of something else doesn't stop it, and drags an overloaded emulator drops aren't
+  taken for the end of the profile. In a chat, the box gets a tap (a touch on Hinge's display: it
+  doesn't take a posted click) before the paste.
+- **Your voice.** Settings come from Hinge Matcher's `config.json` (`%USERPROFILE%\hinge-matcher`)
+  when it's there, so the iPhone version and this one share your profile (`me`), voice and model;
+  otherwise from `%LOCALAPPDATA%\AndroidDesktop\plugins\hinge\config.json`. The history (what was
+  filled in, sent or skipped) is shared too, so openers don't repeat. `backend` picks how Claude is
+  reached: `claude-cli` (your Claude login, no key), `api` (needs the `anthropic` package and an API
+  key) or `auto`. `android_effort` (default `low`, about 7 s a draft) is how hard Claude thinks
+  here; the shared `effort` stays the iPhone version's. The config is never logged.
+- **Off switch.** `"plugins": {"hinge": false}` in `%LOCALAPPDATA%\AndroidDesktop\state.json`;
+  `"read_whole_profile": false` in the config to read only what you scroll past yourself.
+  `ANDROIDDESKTOP_PLUGIN_DEBUG=1` logs what the reader sees and does to `logs\hinge-debug.log`
+  (card ids and names, never what the cards say).
+
 Logs: `%LOCALAPPDATA%\AndroidDesktop\logs` (`androiddesktop.log`, `emulator.log`, `agent.log` for AI
 agents, and one file per app window under `windows\`). Uncaught errors from any thread are logged
 too, with their traceback.
@@ -402,6 +462,36 @@ Launcher (WebView2)      App window (Win32, frameless)            App window (8t
   `.sha256` published with it, with `/SILENT /relaunch=1`: the installer shows its progress and starts
   WinDroid again when it's done.
 - **Launcher** (`ui/`): HTML/CSS in a frameless WebView2 window (pywebview).
+- **Plugins** (`plugins/__init__.py`, `overlay.py`, `panel.py`, `keys.py`, `winocr.py`): a plugin names the
+  packages it's for; when one of them shows in its window, the host makes an instance and hands it
+  the window: its geometry (where Android's display is drawn, in screen pixels, updated on every move,
+  resize, DPI change and minimize), screenshots of the view (`PrintWindow`, as the bar's color
+  sampling does), text input, clicks and drags. Overlays are layered windows (per-pixel alpha,
+  click-through) and side panels are WebView2 windows, both **owned** by the app window, so Windows
+  keeps them above it, hides them while it's minimized and destroys them with it. Text and clicks are
+  key and mouse messages posted to scrcpy's window, which hands them to Android as its UHID keyboard
+  and its mouse: the window needn't be in front, and nothing can land in another window. Text is
+  pasted (the PC's clipboard, then Ctrl+V: scrcpy copies the clipboard to Android before passing it
+  on); typed key by key, Gboard rewrites it depending on timing, and SDL lets go of a posted Shift
+  after each batch of messages unless Windows says the key is down. Real keystrokes (`SendInput`)
+  lost characters on their way through Windows when tested. Windows OCR is `Windows.Media.Ocr`
+  called with plain ctypes, one recognition at a time (the engine fails a second one meanwhile).
+- **Hinge Matcher** (`plugins/hinge/`): a capture loop watches the view several times a second. Between
+  frames it measures how far the content scrolled (row-by-row comparison of small greyscale copies,
+  then to the pixel on the full frames), which keeps the pop-ups on their card. When the picture
+  holds still it OCRs it and tells the screens apart (a profile: cards on the page; the like sheet:
+  "Add a comment" and "Send like"; a chat: the Chat / Profile tabs and "Send a message"). Cards are
+  found from the page color down their edges, a prompt's question and answer by type size, and each
+  card gets a place on the page (view position plus the scroll so far), so the profile adds up as
+  you scroll. A scroll is measured on the rows with detail, by a low percentile of how far each row
+  is off rather than the average, so a playing video or the floating X doesn't outvote the page.
+  Reading the whole profile drags it (`input touchscreen motionevent`, over one `adb shell` kept
+  open: a finger follows 1:1 and, held still before lifting, leaves no fling; Hinge treats quick
+  wheel turns as acceleration, so the wheel's steps vary from 6 to 500 px). Each step is measured on
+  the still pictures before and after it, and Hinge can take half a second to start moving while a
+  video plays. The name is read again without the purple verified badge, which OCR takes for a
+  letter, and the reading that comes up most often wins. `writer.py` (from Hinge Matcher) turns it
+  into a draft with Claude.
 - **Agent sessions** (`ghost.py`, `mcp.py`, `uitree.py`, `agenthelper.py` and
   `helper/src/AgentHelper.java`): the MCP server keeps one helper process running inside Android
   (`app_process`, one JSON line each way over `adb shell`). It makes each hidden app's virtual
@@ -448,6 +538,9 @@ launcher in the Start menu itself (as **WinDroid**) and never updates itself; it
   fallback. Its windows live in its own process, so it tests your working copy even while the agent
   runs. It doesn't cover typing. With `ANDROIDDESKTOP_SERIAL` set it never boots an Android: start the
   test emulator first.
+- `python tools/plugin_check.py` checks the plugin system against the real Android, on Settings: the
+  plugin attaches, screenshots and OCR work, an overlay and a side panel follow the window and hide
+  with it, and text reaches Android exactly, pasted and typed. It uses no real mouse or keyboard input.
 - `python tools/agent_demo.py` runs the agent demo through the MCP server, the way Claude Code
   talks to it: Clock starts hidden, gets a 10-minute timer, the time left is read back, no window
   appears on the PC until `show_to_user` puts Clock in one, timer still running.

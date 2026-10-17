@@ -48,6 +48,7 @@ from . import adb, biometrics, camera, checks, datadir, emuview, ghost, hello, r
 from .catalog import Catalog  # noqa: E402
 from .log import log, log_uncaught  # noqa: E402
 from .manager import TRAY_OPEN, TRAY_QUIT, TRAY_STOP, WindowManager, agent_running, send_to_agent  # noqa: E402
+from .panel import Panel  # noqa: E402
 from .paths import DATA, INSTANCE  # noqa: E402
 from .vm import LOCKED, OFF, RUNNING, VM  # noqa: E402
 
@@ -197,6 +198,7 @@ class Agent:
         self.vm = VM()
         self.catalog = Catalog()
         self.manager = WindowManager(self.vm, self.catalog)
+        self.manager.plugins.panel_factory = lambda app, **kw: Panel(app.hwnd, **kw)  # plugins' side panels
         self.fingerprint = biometrics.Bridge(self.manager, self._label, self._hello_anchor)
         self.updater = update.Updater(winapi.FROZEN, on_change=lambda: self.push(apps=False),
                                       on_ready=lambda: threading.Thread(target=self.quit, daemon=True).start())

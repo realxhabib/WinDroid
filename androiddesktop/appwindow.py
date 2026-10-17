@@ -302,6 +302,8 @@ class AppWindow:
             x, y = win32gui.ClientToScreen(self.hwnd, (0, self.bar))
             density = self._density()
             point = emuview.link.usable()
+            if point and self.manager.plugins.wants(self.app.package):
+                point = None  # plugins read the app from scrcpy's window and type through its keyboard
             if point and self._open_surface(gen, point, (w, h), density):
                 return
             if self.closing or gen != self._gen:
@@ -431,6 +433,7 @@ class AppWindow:
             proc.kill()
         self._drop_surface()
         self.child, self.display_id = 0, None
+        self.manager.plugins.lost(self)
         if not (self.manager.accepting and self.manager.vm.keep_running):
             # Android was shut down on purpose, or we're quitting: nothing to come back to.
             win32gui.DestroyWindow(self.hwnd)
@@ -524,6 +527,7 @@ class AppWindow:
         win32gui.InvalidateRect(self.hwnd, None, False)
         if self.manager.remote:
             self.manager.remote.window_embedded(self, adopted)
+        self.manager.plugins.shown(self)
         self.manager.changed()
 
     def run_intent(self, intent: list[str]) -> None:
@@ -625,6 +629,7 @@ class AppWindow:
             self.surface.resize(cw, max(ch - self.bar, 1), self._density())
         if self.protected:
             self.protected.place()
+        self.manager.plugins.moved(self)
 
     @property
     def view(self) -> int:
@@ -861,7 +866,12 @@ class AppWindow:
             return 1
         if msg == win32con.WM_SIZE:
             self._layout()
+            if wp == win32con.SIZE_MINIMIZED:
+                self.manager.plugins.moved(self)
             win32gui.InvalidateRect(hwnd, None, False)
+            return 0
+        if msg == win32con.WM_MOVE:
+            self.manager.plugins.moved(self)
             return 0
         if msg == win32con.WM_ACTIVATE:
             self.active = (wp & 0xFFFF) != win32con.WA_INACTIVE
@@ -972,6 +982,7 @@ class AppWindow:
             if self.proc and self.proc.poll() is None and self.child:
                 if not self.closing:
                     self.closing = True
+                    self.manager.plugins.closed(self)
                     win32gui.ShowWindow(hwnd, win32con.SW_HIDE)  # feels instant; scrcpy tidies up behind
                     win32gui.PostMessage(self.child, win32con.WM_CLOSE, 0, 0)
                     winapi.user32.SetTimer(hwnd, TIMER_KILL, 3000, None)
@@ -991,6 +1002,7 @@ class AppWindow:
             self._drop_surface()
             if self.manager.remote:
                 self.manager.remote.window_closed(self)  # an app on a phone stays there
+            self.manager.plugins.closed(self)
             self.manager.closed(self)
             return 0
         return win32gui.DefWindowProc(hwnd, msg, wp, lp)

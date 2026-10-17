@@ -25,6 +25,7 @@ from .appwindow import FAILED, RUNNING as WINDOW_RUNNING, AppWindow
 from .log import log
 from .catalog import Catalog
 from .paths import INSTANCE
+from .plugins import WM_HOTKEY, PluginHost
 from .protected import SecureScreens
 from .vm import LOCKED, RUNNING, VM
 
@@ -91,6 +92,7 @@ class WindowManager:
         self._empty = threading.Event()
         self._empty.set()
         self._reported: set[tuple[int, str]] = set()
+        self.plugins = PluginHost(self)
 
     # ------------------------------------------------------------------ thread plumbing
     def start(self) -> None:
@@ -159,6 +161,9 @@ class WindowManager:
             except ValueError:
                 pass
             return 1
+        if msg == WM_HOTKEY:
+            self.plugins.on_hotkey(wp)
+            return 0
         if msg == WM_APP_TRAY:
             event = lp & 0xFFFF
             if event in (win32con.WM_LBUTTONUP, win32con.NIN_SELECT if hasattr(win32con, "NIN_SELECT") else 0x400):
