@@ -26,7 +26,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from androiddesktop import adb, emudisplays, emuview, runtime, winapi  # noqa: E402
+from androiddesktop import adb, datadir, emudisplays, emuview, runtime, winapi  # noqa: E402
 
 winapi.dpi_aware()
 
@@ -187,6 +187,7 @@ def run(package: str) -> None:
 
 
 def main() -> int:
+    datadir.ensure()  # from inside a packaged app (Claude Desktop) it mustn't fork the data folder
     args = sys.argv[1:]
     if "--scrcpy" in args:
         args.remove("--scrcpy")

@@ -14,7 +14,7 @@ import sys
 import time
 import traceback
 
-from . import __version__
+from . import __version__, datadir
 from .agenthelper import HelperError
 from .ghost import GhostError, Sessions
 from .log import agent_log
@@ -216,7 +216,12 @@ def required(args: dict, key: str):
 def main() -> None:
     out = sys.stdout.buffer
     sys.stdout = sys.stderr  # a stray print must not land in the protocol
+    # Claude Desktop is a packaged app: before anything is written, make sure the data folder is the
+    # real one and not a copy only Claude's processes can see (datadir.py).
+    problem = datadir.ensure()
     agent_log(f"MCP server started (WinDroid {__version__})")
+    if problem:
+        agent_log(f"data folder: {problem}")
     server = Server()
     try:
         for raw in sys.stdin.buffer:

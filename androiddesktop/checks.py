@@ -150,12 +150,24 @@ def decide_disk(free: int, installed: bool, needed: int, drive: str) -> Check:
     return Check("disk", OK, f"{gb(free)} GB free on drive {drive}")
 
 
+def decide_data_folder(private: list[Path]) -> Check:
+    """Data left in a packaged app's private copy of %LOCALAPPDATA% (see datadir.py)."""
+    if private:
+        apps = ", ".join(p.parents[2].name.split("_")[0] for p in private)
+        return Check("datadir", WARNING, "Some data is stored where only another app can see it",
+                     f"Part of WinDroid's data is in {apps}'s private storage ({private[0]}). "
+                     "It's moved to the right place the next time WinDroid starts with Android "
+                     "off.")
+    return Check("datadir", OK, f"Data folder: {DATA}")
+
+
 # ------------------------------------------------------------------ all together
 def run(installed: bool, android_running: bool = False) -> list[Check]:
+    from .datadir import private_copies
     total, available = _memory()
     free = shutil.disk_usage(DATA.anchor).free
     return [hypervisor(), decide_memory(total, available, android_running),
-            decide_disk(free, installed, space_needed(), DATA.drive)]
+            decide_disk(free, installed, space_needed(), DATA.drive), decide_data_folder(private_copies())]
 
 
 def blocking(installed: bool = True) -> Check | None:

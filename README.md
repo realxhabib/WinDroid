@@ -223,6 +223,14 @@ Logs: `%LOCALAPPDATA%\AndroidDesktop\logs` (`androiddesktop.log`, `emulator.log`
 agents, and one file per app window under `windows\`). Uncaught errors from any thread are logged
 too, with their traceback.
 
+- **One data folder for everyone** (`datadir.py`). Packaged Windows apps, Claude Desktop among them,
+  get their new files in `%LOCALAPPDATA%` redirected into a private copy only they can see. If
+  WinDroid's first run happened there (Claude Desktop starting the MCP server, say), the
+  runtime would land in Claude's private storage and a Start menu launch would offer setup again.
+  So every entry point first makes sure `%LOCALAPPDATA%\AndroidDesktop` exists for real, creating it
+  through Explorer when redirected, and moves any private copy into it. Inside a folder that exists
+  for real, those apps' writes go to the real folder.
+
 ## How it works
 
 ```

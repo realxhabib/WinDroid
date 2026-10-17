@@ -2,12 +2,13 @@
 import sys
 import time
 
-from androiddesktop import winapi
+from androiddesktop import datadir, winapi
 from androiddesktop.catalog import Catalog
 from androiddesktop.manager import WindowManager
 from androiddesktop.vm import VM
 
 winapi.dpi_aware()
+datadir.ensure()  # run from inside a packaged app (e.g. Claude Desktop), it mustn't fork the data folder
 vm, catalog = VM(), Catalog()
 manager = WindowManager(vm, catalog, ipc=False)  # leaves a running agent alone
 manager.start()

@@ -44,7 +44,7 @@ import win32api  # noqa: E402
 import win32con  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from . import adb, biometrics, camera, checks, emuview, ghost, hello, runtime, shortcuts, state, update  # noqa: E402
+from . import adb, biometrics, camera, checks, datadir, emuview, ghost, hello, runtime, shortcuts, state, update  # noqa: E402
 from .catalog import Catalog  # noqa: E402
 from .log import log, log_uncaught  # noqa: E402
 from .manager import TRAY_OPEN, TRAY_QUIT, TRAY_STOP, WindowManager, agent_running, send_to_agent  # noqa: E402
@@ -654,6 +654,12 @@ def wait_for_agent_exit(timeout: float = 180) -> None:
 def main() -> None:
     args = sys.argv[1:]
     command = args[0] if args else ""
+    if command == datadir.HELPER_COMMAND:
+        datadir.helper(args[1:])
+        return
+    problem = datadir.ensure()  # before anything writes to the data folder
+    if problem:
+        log(f"data folder: {problem}")
     if command == "setup":
         runtime.install(lambda m, f: print(f"\r{m:<70} {f * 100:5.1f}%", end="", flush=True))
         print()
