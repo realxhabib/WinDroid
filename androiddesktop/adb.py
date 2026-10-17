@@ -1,6 +1,7 @@
 """Thin adb wrapper: always our adb, always our VM, never a console window."""
 from __future__ import annotations
 
+import re
 import subprocess
 
 from . import children
@@ -69,6 +70,22 @@ def user_locked() -> bool | None:
         if ce_available.strip() == "true":
             return False
         return parse_user_locked(ce_available, shell("am get-started-user-state 0", timeout=15))
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+
+
+def parse_keyguard_showing(policy: str) -> bool | None:
+    """From `dumpsys window policy`: whether Android's own lock screen is up. None if it doesn't say."""
+    found = (re.search(r"KeyguardStateMonitor\s*\n\s*mIsShowing=(true|false)", policy)
+             or re.search(r"KeyguardServiceDelegate\s*\n\s*showing=(true|false)", policy))
+    return None if found is None else found.group(1) == "true"
+
+
+def keyguard_showing() -> bool | None:
+    """Whether Android's lock screen is up on display 0 (no window shows it). While it is, apps on the
+    emulator's own displays don't draw; scrcpy's displays are "always unlocked". None if we couldn't tell."""
+    try:
+        return parse_keyguard_showing(shell("dumpsys window policy", timeout=10))
     except (subprocess.TimeoutExpired, OSError):
         return None
 

@@ -329,6 +329,11 @@ class AppWindow:
             point = emuview.link.usable()
             if point and self.manager.plugins.wants(self.app.package):
                 point = None  # plugins read the app from scrcpy's window and type through its keyboard
+            if point and adb.keyguard_showing() is not False:
+                # Android's own lock screen is up (or it didn't say): until it's gone, apps on the
+                # emulator's displays don't draw, while scrcpy's displays are "always unlocked".
+                log(f"{self.app.package}: using scrcpy: Android's lock screen is up")
+                point = None
             if point and self._open_surface(gen, point, (w, h), density):
                 return
             if self.closing or gen != self._gen:

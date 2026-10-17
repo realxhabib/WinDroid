@@ -53,7 +53,20 @@ class Paths(unittest.TestCase):
         self.assertEqual(self.paths(ANDROIDDESKTOP_SERIAL="192.168.1.5:5555")[3], "5584")
 
 
+def port_free(port: int) -> bool:
+    with socket.socket() as s:
+        try:
+            s.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+
+
+needs_port = unittest.skipUnless(port_free(app.UI_PORT), f"port {app.UI_PORT} is in use, likely by a running WinDroid")
+
+
 class LauncherPage(unittest.TestCase):
+    @needs_port
     def test_port_is_ours_and_stable(self):
         with mock.patch.object(app, "INSTANCE", ""):
             self.assertEqual(app.ui_port(), app.UI_PORT)
@@ -62,6 +75,7 @@ class LauncherPage(unittest.TestCase):
             self.assertNotIn(other, (app.UI_PORT, 42001))
             self.assertEqual(app.ui_port(), other)
 
+    @needs_port
     def test_port_taken_by_something_else(self):
         with socket.socket() as taken, mock.patch.object(app, "INSTANCE", ""):
             taken.bind(("127.0.0.1", app.UI_PORT))
