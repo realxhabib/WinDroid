@@ -28,7 +28,7 @@ Status: `todo`, `doing`, `blocked` (waiting on something outside the code), `ide
 | Status | Gap | Notes |
 |---|---|---|
 | todo | Smooth (emulator-display) windows only start once Android's lock screen is gone | Until then windows use scrcpy. Making emulator displays draw over the lock screen (an "always unlocked" display flag) would make them smooth right after boot. |
-| todo | Hinge Matcher needs scrcpy windows | It reads the app from scrcpy's window and pastes through scrcpy's keyboard. Port it to emulator displays: frames from the display, text through Android's clipboard. |
+| doing | Hinge Matcher needs scrcpy windows | Ported: plugins read the emulator display's frames and put text in through InputHelper and Android's clipboard, so Hinge opens smooth. Unit tests pass; `tools/plugin_check.py` (both paths) and a look at Hinge on the PC are left before it moves to Shipped. |
 | todo | Webcam video mode shows only the middle 75% of the picture | Photo mode is fine. The fix is in the virtual camera; installing it needs administrator rights (the prompt was declined). |
 | todo | Send to iPhone/iPad untested on a real device | Tested end to end with a desktop browser standing in for the phone. |
 | todo | Clipboard, sound, tray menu, Install APK, uninstall, Snap Layouts flyout never tested by hand | Run through each once and fix what's broken. |

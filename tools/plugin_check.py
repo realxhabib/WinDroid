@@ -1,13 +1,14 @@
 """End-to-end check of the plugin system against the real Android VM, on Settings:
 
-    python tools/plugin_check.py
+    python tools/plugin_check.py            # on an emulator display (emuview.py), when Android allows
+    python tools/plugin_check.py --scrcpy   # in a scrcpy window
 
 1. A test plugin attaches when Settings shows in its window, and gets the window's geometry.
 2. Its screenshot of the app isn't black, and Windows OCR reads it.
 3. An overlay layer sits on the app's screen and follows the window when it moves; a side panel
    (WebView2) is glued to the window's edge and follows too.
 4. Minimizing hides both; restoring shows them again.
-5. Text through the window's keyboard path (keys.py) reaches Android exactly, pasted and typed.
+5. Text through the window's keyboard path reaches Android exactly, pasted and typed.
 6. Closing the window stops the plugin and takes its layer and panel along.
 
 Like smoke_test.py, the window lives in this process, so a running agent is left alone (and so is
@@ -32,7 +33,7 @@ import win32con  # noqa: E402
 import win32gui  # noqa: E402
 from PIL import Image, ImageStat  # noqa: E402
 
-from androiddesktop import winocr  # noqa: E402
+from androiddesktop import emuview, winocr  # noqa: E402
 from androiddesktop.catalog import Catalog  # noqa: E402
 from androiddesktop.manager import WindowManager  # noqa: E402
 from androiddesktop.overlay import side_panel  # noqa: E402
@@ -149,7 +150,8 @@ def _run(manager: WindowManager) -> None:
     time.sleep(2.5)  # let Settings draw
     geo = app.geometry()
     child = win32gui.GetWindowRect(win.child)
-    check(geo.content == child, f"content rect {geo.content} is scrcpy's window {child}")
+    print(f"  on {'emulator display ' + str(win.surface.slot) if win.surface else 'scrcpy'}", flush=True)
+    check(geo.content == child, f"content rect {geo.content} is the view's {child}")
     check(geo.visible, "visible")
 
     step("Screenshot and OCR")
@@ -214,6 +216,8 @@ def _run(manager: WindowManager) -> None:
 
 
 def main() -> None:
+    if "--scrcpy" in sys.argv[1:]:
+        emuview.link.usable = lambda: None
     vm = VM()
     vm.refresh()
     if vm.state != RUNNING:

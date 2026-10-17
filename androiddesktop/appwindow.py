@@ -327,8 +327,6 @@ class AppWindow:
             x, y = win32gui.ClientToScreen(self.hwnd, (0, self.bar))
             density = self._density()
             point = emuview.link.usable()
-            if point and self.manager.plugins.wants(self.app.package):
-                point = None  # plugins read the app from scrcpy's window and type through its keyboard
             if point and adb.keyguard_showing() is not False:
                 # Android's own lock screen is up (or it didn't say): until it's gone, apps on the
                 # emulator's displays don't draw, while scrcpy's displays are "always unlocked".

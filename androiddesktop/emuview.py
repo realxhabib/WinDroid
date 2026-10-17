@@ -104,7 +104,8 @@ VK_TO_KEYCODE = {
 MODIFIERS = {win32con.VK_SHIFT, win32con.VK_CONTROL, win32con.VK_MENU, win32con.VK_LSHIFT, win32con.VK_RSHIFT,
              win32con.VK_LCONTROL, win32con.VK_RCONTROL, win32con.VK_LMENU, win32con.VK_RMENU, win32con.VK_LWIN,
              win32con.VK_RWIN}
-KEYCODE_BACK, KEYCODE_V = 4, 50
+KEYCODE_BACK, KEYCODE_A, KEYCODE_V, KEYCODE_MOVE_END, KEYCODE_CTRL_LEFT = 4, 29, 50, 123, 113
+META_CTRL = 0x3000  # META_CTRL_ON | META_CTRL_LEFT_ON
 # KeyEvent.META_*: (virtual key, flags while it's down)
 META = ((win32con.VK_LSHIFT, 0x41), (win32con.VK_RSHIFT, 0x81), (win32con.VK_LCONTROL, 0x3000),
         (win32con.VK_RCONTROL, 0x5000), (win32con.VK_LMENU, 0x12), (win32con.VK_RMENU, 0x22),

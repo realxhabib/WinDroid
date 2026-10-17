@@ -6,11 +6,13 @@ makes an instance for that window and hands it an AppHandle, its view of the win
 - geometry(): where the window is and where Android's display is drawn inside it, in screen pixels,
   with the DPI scale and whether it's showing. The host calls the plugin's geometry_changed() as the
   window moves, resizes, changes monitor (DPI), minimizes or comes back.
-- screenshot(): the app's screen as the window draws it, captured on the PC (PrintWindow). Android
-  takes no part in it, so the app can't notice.
+- screenshot(): the app's screen as the window draws it, captured on the PC: the frame the window
+  shows on an emulator display (emuview.py), or PrintWindow of scrcpy's window. Android takes no part
+  in it, so the app can't notice.
 - keyboard() / click(): put text into the app, or click in it, through the window's own keyboard and
-  mouse path (keys.py). drag() / fling(): move a finger on the app's
-  screen, as a mouse drag in the window does.
+  mouse path: on an emulator display, the display's own text and key input and Android's clipboard
+  (_DisplayKeyboard); in a scrcpy window, key messages posted to it (keys.py). drag() / fling(): move
+  a finger on the app's screen, as a mouse drag in the window does.
 - layer(): a click-through overlay above the window (overlay.py), and panel(): a WebView2 side panel
   glued to the window's edge. Both are owned by the window: they keep above it, hide with it while
   it's minimized and go away with it.
@@ -25,6 +27,7 @@ import ctypes
 import ctypes.wintypes as wt
 import importlib
 import queue
+import random
 import subprocess
 import threading
 import time
@@ -37,7 +40,7 @@ import win32con
 import win32gui
 from PIL import Image
 
-from .. import adb, keys, overlay, state, winapi
+from .. import adb, emuview, keys, overlay, state, winapi
 from ..log import log
 from ..paths import ADB_EXE, SERIAL, android_env
 
@@ -150,8 +153,13 @@ class AppHandle:
 
     @property
     def view(self) -> int:
-        """The child window showing the app: scrcpy's, or protected.py's during a secure screen."""
+        """The child window showing the app: emuview's or scrcpy's, or protected.py's during a secure screen."""
         return self._win.view
+
+    def _surface(self) -> emuview.Surface | None:
+        """The app's emulator display, when the window shows one rather than scrcpy's window."""
+        surface = self._win.surface
+        return surface if surface is not None and not surface.closed and surface.view == self._win.child else None
 
     @property
     def protected(self) -> bool:
@@ -184,6 +192,9 @@ class AppHandle:
             return None
         view = self.view
         _, _, w, h = win32gui.GetClientRect(view)
+        surface = self._surface()
+        if surface is not None:  # Direct3D draws it: PrintWindow sees nothing, the frame is right here
+            return surface.capture(w, h)
         return winapi.capture(view, w, h)
 
     def foreground(self) -> bool:
@@ -200,19 +211,33 @@ class AppHandle:
         what it's sent as WM_CHAR. None while the app isn't showing."""
         if not self.showing():
             return None
+        surface = self._surface()
+        if surface is not None:
+            return _DisplayKeyboard(surface, cps, cancel)
         if self._win.protected is not None:
             return _CharKeyboard(self.view, cps, cancel)
         return keys.Keyboard(self.view, cps, cancel)
 
     def click(self, x: int, y: int) -> None:
         """A left click on the app's screen at view pixels (x, y), as the window's own mouse input."""
-        if self.showing():
-            keys.post_click(self.view, int(x), int(y))
+        if not self.showing():
+            return
+        surface = self._surface()
+        if surface is not None:  # a touch on its display, as the view's own click makes
+            surface.wake()
+            emuview.link.touch(surface.point, surface.slot, int(x), int(y), True)
+            time.sleep(0.06)
+            emuview.link.touch(surface.point, surface.slot, int(x), int(y), False)
+            return
+        keys.post_click(self.view, int(x), int(y))
 
     def _touch(self, commands: list[str]) -> bool:
         display = self._win.display_id
         if not self.showing() or display is None or self._win.protected is not None:
             return False
+        surface = self._surface()
+        if surface is not None:
+            surface.wake()  # stream while the page moves: an idle display shows a new frame only every POLL_SECS
         try:
             self._shell.run(" && ".join(f"input touchscreen -d {display} {c}" for c in commands))
             return True
@@ -290,6 +315,103 @@ class _CharKeyboard(keys.Keyboard):
     paste = type = insert
 
 
+class _DisplayKeyboard(keys.Keyboard):
+    """An app on an emulator display (emuview.py): keys and text go to InputHelper with the display's id,
+    as the view's own keyboard does, and a paste puts the text on Android's clipboard (gRPC) before
+    Ctrl+V. Nothing is posted to a window, so nothing depends on Windows' keyboard state."""
+
+    def __init__(self, surface: emuview.Surface, cps: float = 12.0, cancel: threading.Event | None = None,
+                 sleep: Callable[[float], None] = time.sleep) -> None:
+        super().__init__(surface.view, cps, cancel, sleep)
+        self.surface = surface
+
+    def _ok(self) -> bool:
+        if self.surface.closed and not self.cancel.is_set():
+            self.stopped = "the window went away"
+            return False
+        return super()._ok()
+
+    def _key(self, keycode: int, down: bool, meta: int) -> None:
+        emuview.link.helper(f"key {self.surface.display} {0 if down else 1} {keycode} 0 {meta}")
+
+    def press_code(self, keycode: int, ctrl: bool = False) -> bool:
+        """An Android key press (KeyEvent.KEYCODE_*), with Ctrl held if asked."""
+        if not self._ok():
+            return False
+        self.surface.wake()
+        meta = emuview.META_CTRL if ctrl else 0
+        if ctrl:
+            self._key(emuview.KEYCODE_CTRL_LEFT, True, meta)
+        self._key(keycode, True, meta)
+        self.sleep(random.uniform(0.025, 0.05))
+        self._key(keycode, False, meta)
+        if ctrl:
+            self._key(emuview.KEYCODE_CTRL_LEFT, False, 0)
+        self.sleep(0.04)
+        return True
+
+    def select_all(self) -> bool:
+        return self.press_code(emuview.KEYCODE_A, ctrl=True)
+
+    def to_end(self) -> bool:
+        return self.press_code(emuview.KEYCODE_MOVE_END, ctrl=True)
+
+    def paste(self, text: str) -> bool:
+        if not self._ok():
+            return False
+        text = keys.normalize(text)
+        saved = keys._get_clipboard()
+        emuview.link.set_clipboard(self.surface.point, text)
+        try:
+            ok = self.press_code(emuview.KEYCODE_V, ctrl=True)
+            self.sleep(0.6)  # until Android has pasted
+            return ok
+        finally:
+            # The emulator shares Android's clipboard with the PC's: if the text came across, put
+            # the user's back.
+            if saved is not None and saved != text and keys._get_clipboard() == text:
+                keys._set_clipboard(saved)
+
+    def _text(self, run: str) -> None:
+        emuview.link.helper(f"text {self.surface.display} {run.encode('utf-8').hex()}")
+
+    def type(self, text: str, progress: Callable[[float], None] | None = None) -> bool:
+        """Character by character, as the PC's keyboard types into the view (Android's key map types
+        what a US keyboard can, Shift included); anything else (emoji, accents) is pasted."""
+        total = max(1, len(keys.normalize(text)))
+        done = 0
+        for kind, run in typeable(text):
+            if kind == "paste":
+                if not self.paste(run):
+                    return False
+                done += len(run)
+            else:
+                for c in run:
+                    if not self._ok():
+                        return False
+                    self.surface.wake()
+                    self._text(c)
+                    done += 1
+                    if progress:
+                        progress(done / total)
+                    self.sleep(max(0.0, 1 / self.cps * random.uniform(0.6, 1.4)))
+            if progress:
+                progress(done / total)
+        return True
+
+
+def typeable(text: str) -> list[tuple[str, str]]:
+    """("keys", run) for what Android's virtual key map types (printable ASCII), ("paste", run) for the rest."""
+    out: list[tuple[str, str]] = []
+    for c in keys.normalize(text):
+        kind = "keys" if " " <= c <= "~" else "paste"
+        if out and out[-1][0] == kind:
+            out[-1] = (kind, out[-1][1] + c)
+        else:
+            out.append((kind, c))
+    return out
+
+
 class Plugin:
     """Base class. One instance per app window it's attached to."""
 
@@ -349,10 +471,6 @@ class PluginHost:
     @staticmethod
     def enabled(cls: type[Plugin]) -> bool:
         return bool((state.get("plugins") or {}).get(cls.name, True))
-
-    def wants(self, package: str) -> bool:
-        """Whether an enabled plugin is for this app. Any thread: a window asks before it starts."""
-        return any(package in c.packages and self.enabled(c) for c in self._load())
 
     def _each(self, win: AppWindow, what: str, *args: Any) -> None:
         for p in self.instances.get(win.hwnd, []):

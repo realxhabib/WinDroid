@@ -334,11 +334,12 @@ the chat started, not as messages.
   **Longer** sets the length, and **New ideas** writes three more, following anything you type in
   "Tell Claude…" ("mention I cook"). **Skip** notes the pass in the history; you tap ✕ in Hinge.
 - **Unnoticed.** It reads Hinge from screenshots of its window, taken on the PC, and Windows' own
-  OCR: nothing runs inside Android, and the accessibility service stays off. An idea goes in through
-  the window's own keyboard, the virtual keyboard yours uses: pasted (Ctrl+V, after scrcpy copies the
-  text to Android), which keeps it exact. Typed key by key, Android's keyboard app auto-corrects and
-  capitalises depending on timing ("can i" became "Can I", and keys went missing), so typing is only
-  an option: `"insert": "type"` in the config. Your clipboard is put back afterwards. Reading
+  OCR: nothing runs inside Android, and the accessibility service stays off. It works in both kinds
+  of window, smooth (the emulator's own displays) and scrcpy's. An idea goes in through the window's
+  own keyboard, the one yours uses: pasted (put on Android's clipboard, then Ctrl+V), which keeps it
+  exact. Typed key by key, Android's keyboard app can auto-correct and capitalise depending on timing
+  ("can i" became "Can I", and keys went missing), so typing is only an option: `"insert": "type"` in
+  the config. Your clipboard is put back afterwards. Reading
   the whole profile is a finger dragging the page up a little under half a screen at a time, in the
   page's left margin where no card, video or button can take the touch, and a few flicks back to the
   top: the touches a mouse drag in the window makes. It stops if you scroll, tap ♥ or move on; a
@@ -494,16 +495,21 @@ Launcher (WebView2)      App window (Win32, frameless)            App window (8t
 - **Plugins** (`plugins/__init__.py`, `overlay.py`, `panel.py`, `keys.py`, `winocr.py`): a plugin names the
   packages it's for; when one of them shows in its window, the host makes an instance and hands it
   the window: its geometry (where Android's display is drawn, in screen pixels, updated on every move,
-  resize, DPI change and minimize), screenshots of the view (`PrintWindow`, as the bar's color
-  sampling does), text input, clicks and drags. Overlays are layered windows (per-pixel alpha,
-  click-through) and side panels are WebView2 windows, both **owned** by the app window, so Windows
-  keeps them above it, hides them while it's minimized and destroys them with it. Text and clicks are
-  key and mouse messages posted to scrcpy's window, which hands them to Android as its UHID keyboard
-  and its mouse: the window needn't be in front, and nothing can land in another window. Text is
-  pasted (the PC's clipboard, then Ctrl+V: scrcpy copies the clipboard to Android before passing it
-  on); typed key by key, Gboard rewrites it depending on timing, and SDL lets go of a posted Shift
-  after each batch of messages unless Windows says the key is down. Real keystrokes (`SendInput`)
-  lost characters on their way through Windows when tested. Windows OCR is `Windows.Media.Ocr`
+  resize, DPI change and minimize), screenshots of the view, text input, clicks and drags. Overlays
+  are layered windows (per-pixel alpha, click-through) and side panels are WebView2 windows, both
+  **owned** by the app window, so Windows keeps them above it, hides them while it's minimized and
+  destroys them with it. Input goes only to the app's own display, so the window needn't be in front
+  and nothing can land in another window. On an emulator display the screenshot is the frame the
+  window is showing (Direct3D draws it, so `PrintWindow` sees nothing); text goes to InputHelper with
+  the display's id, as the view's own keyboard does, and a paste puts the text on Android's clipboard
+  over gRPC before Ctrl+V; a click is a touch on the display; a tap, drag or fling makes the display
+  stream while the page moves. In a scrcpy window the screenshot is `PrintWindow`, as the bar's color
+  sampling does, and text and clicks are key and mouse messages posted to scrcpy's window, which
+  hands them to Android as its UHID keyboard and its mouse. Text is pasted (the PC's clipboard, then
+  Ctrl+V: scrcpy copies the clipboard to Android before passing it on); typed key by key, Gboard
+  rewrites it depending on timing, and SDL lets go of a posted Shift after each batch of messages
+  unless Windows says the key is down. Real keystrokes (`SendInput`) lost characters on their way
+  through Windows when tested. Windows OCR is `Windows.Media.Ocr`
   called with plain ctypes, one recognition at a time (the engine fails a second one meanwhile).
 - **Hinge Matcher** (`plugins/hinge/`): a capture loop watches the view several times a second. Between
   frames it measures how far the content scrolled (row-by-row comparison of small greyscale copies,
@@ -570,6 +576,7 @@ launcher in the Start menu itself (as **WinDroid**) and never updates itself; it
 - `python tools/plugin_check.py` checks the plugin system against the real Android, on Settings: the
   plugin attaches, screenshots and OCR work, an overlay and a side panel follow the window and hide
   with it, and text reaches Android exactly, pasted and typed. It uses no real mouse or keyboard input.
+  It runs on an emulator display when Android allows; `--scrcpy` checks a scrcpy window instead.
 - `python tools/agent_demo.py` runs the agent demo through the MCP server, the way Claude Code
   talks to it: Clock starts hidden, gets a 10-minute timer, the time left is read back, no window
   appears on the PC until `show_to_user` puts Clock in one, timer still running.
@@ -636,8 +643,8 @@ build an installer without publishing it.
 
 What's missing and what's next is tracked in [ROADMAP.md](ROADMAP.md).
 
-- Until Android's lock screen is gone after a start (screen-lock PIN), and for apps with a plugin,
-  windows use scrcpy rather than the emulator's own displays.
+- Until Android's lock screen is gone after a start (screen-lock PIN), windows use scrcpy rather than
+  the emulator's own displays.
 - From the eighth app window on (or with an Android started by an older version), apps show through
   scrcpy: video encoded in software inside the VM, so large windows of fast-moving games cost CPU
   there (`scrcpy_quality` trades sharpness for it).
