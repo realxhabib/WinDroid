@@ -145,7 +145,7 @@ const hub = (() => {
     const prints = s.fingerprints;
     rows.push(row("Fingerprint",
       !s.hello ? "Set up Windows Hello in Windows first." :
-      s.enrolling ? "Adding one: confirm your PIN in Android's Settings, Android Desktop touches the sensor." :
+      s.enrolling ? "Adding one: confirm your PIN in Android's Settings, WinDroid touches the sensor." :
       prints ? "Windows Hello answers Android apps that ask for your fingerprint." :
       running ? "Add one to Android once, and Windows Hello answers its fingerprint prompts." :
       "Android says whether one is set up while it runs. Setting one up starts Android.",
@@ -193,7 +193,7 @@ const hub = (() => {
       row("Claude Code",
         !code.installed ? "Not installed on this PC." :
         code.current ? "Connected, for every project." :
-        code.connected ? "Connected to another copy of Android Desktop." : "Adds Android Desktop's MCP server, for every project.",
+        code.connected ? "Connected to another copy of WinDroid." : "Adds WinDroid's MCP server, for every project.",
         code.current ? okMark("Connected") : null,
         code.current ? button("Disconnect", null, async () => { const m = await api().disconnect_claude(); toast(m || "Disconnected from Claude Code"); }) :
         code.installed ? button(code.connected ? "Reconnect" : "Connect Claude", "\uE99A", connectClaude, "primary tiny") : null),
@@ -276,7 +276,7 @@ const hub = (() => {
 
   function aboutCard(f) {
     const u = f.updates || {};
-    return card("about", "\uE946", ["#a3b1c6", "#5c677d"], "Android Desktop", `Version ${u.version || ""}`,
+    return card("about", "\uE946", ["#a3b1c6", "#5c677d"], "WinDroid", `Version ${u.version || ""}`,
       u.offer ? tag(`${u.offer.version} available`, "warn") : null,
       h("p", { class: "card-text", text: "Android runs in a virtual machine on this PC, and nothing leaves it." }),
       h("div", { class: "card-actions" },
@@ -411,7 +411,7 @@ const hub = (() => {
     if (box.dataset.key === key) return;
     box.dataset.key = key;
     box.replaceChildren(
-      h("div", { class: "whatsnew-head" }, h("b", { text: w && !w.first ? "What's new" : "Welcome to Android Desktop" }),
+      h("div", { class: "whatsnew-head" }, h("b", { text: w && !w.first ? "What's new" : "Welcome to WinDroid" }),
         h("span", { text: version ? `Version ${version}` : "" })),
       h("ul", {}, news().map((n) => h("li", {}, glyph(n.glyph),
         h("div", { class: "wn-text" }, h("b", { text: n.title }), h("span", { text: n.text })),
@@ -476,7 +476,7 @@ const hub = (() => {
       A("apk", "Install an APK", "\uE7B8", () => api().install_apk(), "sideload", installed),
       A("logs", "Open the logs folder", "\uE838", () => api().open_folder("logs"), "agent.log androiddesktop.log emulator"),
       A("hide", "Close the launcher", "\uE8BB", () => api().hide(), "hide"),
-      A("quit", "Quit Android Desktop", "\uE7E8", () => api().quit(), "exit close everything"),
+      A("quit", "Quit WinDroid", "\uE7E8", () => api().quit(), "exit close everything"),
     ].filter(Boolean);
   }
 

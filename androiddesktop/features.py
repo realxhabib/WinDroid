@@ -1,4 +1,4 @@
-"""Everything Android Desktop can do, and how each feature stands right now: the data behind the
+"""Everything WinDroid can do, and how each feature stands right now: the data behind the
 launcher's own settings page (one card per feature in ui/), its command palette (Ctrl+K) and the
 What's new card.
 
@@ -167,7 +167,7 @@ def registered(config: dict) -> dict | None:
 
 
 def same_command(entry: dict | None, command: list[str]) -> bool:
-    """entry starts this copy of Android Desktop (not, say, another checkout's Python)."""
+    """entry starts this copy of WinDroid (not, say, another checkout's Python)."""
     if not entry:
         return False
     try:
@@ -273,7 +273,7 @@ def performance_card(app_windows: str, quality: str, vm_state: str, endpoint: bo
     elif disabled:
         mode, why = "scrcpy", f"Video until Android restarts: {disabled}."
     elif not endpoint:
-        mode, why = "scrcpy", "Video until Android restarts: an older version of Android Desktop started it."
+        mode, why = "scrcpy", "Video until Android restarts: an older version of WinDroid started it."
     else:
         mode, why = "emulator", "Up to seven windows on the emulator's own displays; more through video."
     return {"setting": app_windows if app_windows in APP_WINDOWS else "auto", "mode": mode, "why": why,
@@ -531,7 +531,7 @@ class Features:
             return "This copy runs from source: update it with git."
         updater.check(force=True)
         offer = updater.snapshot()
-        return f"Android Desktop {offer['version']} is available." if offer else "You have the latest version."
+        return f"WinDroid {offer['version']} is available." if offer else "You have the latest version."
 
     @staticmethod
     def dismiss_whats_new() -> None:
