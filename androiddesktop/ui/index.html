@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WinDroid</title>
 <link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="hub.css">
 </head>
 <body>
 <div class="backdrop" aria-hidden="true">
@@ -101,6 +102,7 @@
       </div>
       <button class="icon-btn dismiss" id="hello-dismiss" title="Not now"><span class="glyph">&#xE711;</span></button>
     </div>
+    <div class="whatsnew" id="whatsnew" hidden></div>
     <label class="search">
       <span class="glyph">&#xE721;</span>
       <input id="search" type="text" placeholder="Search apps" autocomplete="off" spellcheck="false">
@@ -118,6 +120,7 @@
         <span class="glyph">&#xE721;</span>
         <p>No apps match "<span id="empty-q"></span>"</p>
         <button class="ghost" id="search-play">Search Google Play</button>
+        <button class="ghost quiet" id="search-actions">Search actions</button>
       </div>
     </div>
   </section>
@@ -163,18 +166,48 @@
     </div>
   </section>
 
+  <section class="hub" id="hub" hidden>
+    <header class="hub-head">
+      <button class="icon-btn" id="hub-back" title="Back (Esc)"><span class="glyph">&#xE72B;</span></button>
+      <h2>Settings</h2>
+      <button class="link-btn" id="hub-android" title="Android's own Settings app"><span class="glyph">&#xE8A7;</span>Android settings</button>
+    </header>
+    <nav class="chips" id="hub-chips"></nav>
+    <div class="hub-body" id="hub-body"></div>
+  </section>
+
   <footer class="dock" id="dock">
     <button class="dock-btn" id="play"><img id="play-icon" alt=""><span>Get apps</span></button>
     <button class="dock-btn" id="apk"><span class="glyph">&#xE7B8;</span><span>Install APK</span></button>
     <button class="dock-btn" id="remote-open"><span class="glyph">&#xE8EA;</span><span>iPhone &amp; iPad</span></button>
     <span class="spacer"></span>
-    <button class="icon-btn" id="settings" title="Android settings"><span class="glyph">&#xE713;</span></button>
+    <button class="kbd-btn" id="palette-open" title="Search apps and actions"><span class="glyph">&#xE721;</span><kbd class="key">Ctrl K</kbd></button>
+    <button class="icon-btn" id="settings" title="Settings (Ctrl+,)"><span class="glyph">&#xE713;</span></button>
   </footer>
 </main>
 
 <div class="menu" id="menu" hidden></div>
 <div class="toast" id="toast" hidden></div>
 
+<div class="palette-scrim" id="palette" hidden>
+  <div class="palette" role="dialog" aria-label="Search apps and actions">
+    <label class="palette-input">
+      <span class="glyph">&#xE721;</span>
+      <input id="palette-q" type="text" placeholder="Search apps and actions" autocomplete="off" spellcheck="false"
+             role="combobox" aria-controls="palette-list" aria-expanded="true">
+      <kbd class="key">Esc</kbd>
+    </label>
+    <div class="palette-list" id="palette-list" role="listbox"></div>
+    <div class="palette-foot">
+      <span><kbd class="key">&#x2191;</kbd><kbd class="key">&#x2193;</kbd> move</span>
+      <span><kbd class="key">Enter</kbd> run</span>
+      <span><kbd class="key">Ctrl ,</kbd> settings</span>
+    </div>
+  </div>
+</div>
+
+<script src="fuzzy.js"></script>
 <script src="app.js"></script>
+<script src="hub.js"></script>
 </body>
 </html>

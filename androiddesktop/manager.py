@@ -36,7 +36,7 @@ AGENT_CLASS = "AndroidDesktop.Agent" + INSTANCE
 APP_CLASS = "AndroidDesktop.AppWindow"
 WM_APP_CALL = win32con.WM_APP + 20
 WM_APP_TRAY = win32con.WM_APP + 21
-TRAY_OPEN, TRAY_STOP, TRAY_QUIT = 1001, 1002, 1003
+TRAY_OPEN, TRAY_STOP, TRAY_QUIT, TRAY_SETTINGS = 1001, 1002, 1003, 1004
 APP_ICON = Path(__file__).with_name("assets") / "icon.ico"
 
 
@@ -86,6 +86,7 @@ class WindowManager:
         self.on_notice: Callable[[str], None] = lambda text: log(text)  # something the user should hear about
         self.on_unlock: Callable[[AppWindow], None] = lambda win: None  # a window's "Unlock" button
         self.remote: Hub | None = None  # apps on iPhones and iPads (remote/hub.py), when the agent has it
+        self.on_window_action: Callable[[AppWindow, str], None] = lambda win, action: None  # its "..." menu
         self.listeners: list[Callable[[], None]] = []
         self._calls: queue.Queue = queue.Queue()
         self._ready = threading.Event()
@@ -203,6 +204,7 @@ class WindowManager:
     def _tray_menu(self) -> None:
         menu = win32gui.CreatePopupMenu()
         win32gui.AppendMenu(menu, win32con.MF_STRING, TRAY_OPEN, "Open WinDroid")
+        win32gui.AppendMenu(menu, win32con.MF_STRING, TRAY_SETTINGS, "Settings")
         win32gui.AppendMenu(menu, win32con.MF_SEPARATOR, 0, "")
         flags = win32con.MF_STRING | (0 if self.vm.state in (RUNNING, LOCKED) else win32con.MF_GRAYED)
         win32gui.AppendMenu(menu, flags, TRAY_STOP, "Shut down Android")

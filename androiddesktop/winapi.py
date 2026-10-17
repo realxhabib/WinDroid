@@ -6,6 +6,7 @@ import ctypes
 import ctypes.wintypes as wt
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pythoncom
@@ -212,3 +213,21 @@ def light_theme() -> bool:
             return bool(winreg.QueryValueEx(k, "AppsUseLightTheme")[0])
     except OSError:
         return False
+
+
+def copy_text(text: str) -> None:
+    """Put text on the Windows clipboard."""
+    import win32clipboard
+    for _ in range(10):  # another program may have it open for a moment
+        try:
+            win32clipboard.OpenClipboard(0)
+            break
+        except Exception:
+            time.sleep(0.05)
+    else:
+        raise OSError("the clipboard is busy")
+    try:
+        win32clipboard.EmptyClipboard()
+        win32clipboard.SetClipboardText(text, win32con.CF_UNICODETEXT)
+    finally:
+        win32clipboard.CloseClipboard()

@@ -9,25 +9,48 @@ drag, snap, pin to the taskbar or maximize like any other Windows app.
 - **One window per app.** Every app runs on its own Android virtual display, shown in its own
   Windows window. Resize the window and the app re-lays itself out for the new size.
 - **Sleek, frameless windows.** No Windows title bar: a slim strip that takes on the app's own top
-  color, with Back, the app's icon and name, Keep on top, Minimize, Maximize and Close. The native
-  frame is kept underneath, so rounded corners, shadows, Aero Snap and the Windows 11 Snap Layouts
-  flyout (hover Maximize) all work.
+  color, with Back, the app's icon and name, **...** (more), Keep on top, Minimize, Maximize and
+  Close. The native frame is kept underneath, so rounded corners, shadows, Aero Snap and the
+  Windows 11 Snap Layouts flyout (hover Maximize) all work.
+- **Everything for an app, from its own window.** The bar's **...** button: Keep on top, **Pin to
+  Start**, **Add a desktop shortcut**, Android's **App info**, **Uninstall**, and the launcher's
+  settings.
 - **Real Windows citizens.** Each app has its own taskbar button and Alt+Tab entry with its real
-  icon. Right-click an app in the launcher, choose **Pin to Start**, and it appears in the Start
-  menu; from there you can also pin it to the taskbar.
+  icon. **Pin to Start** (from the app's **...** menu, or right-click it in the launcher) puts it in
+  the Start menu; from there you can also pin it to the taskbar.
 - **Launcher.** A Start-menu-style window listing every Android app with its real icon, plus search,
   **Get apps** (Play Store) and **Install APK**.
+- **Settings for every feature.** The launcher's gear opens Android Desktop's own settings: a card
+  per feature with how it stands right now and a button for what it does (Android, Security,
+  Camera, AI agents, Performance, About; Plugins, iPhone & iPad and updates where this version has
+  them). **Android settings** at the top opens Android's own Settings app. Also in the tray menu,
+  and `pythonw -m androiddesktop settings`.
+- **Ctrl+K finds anything.** A command palette over every app and action: type a few letters of
+  "set up fingerprint", "connect claude", "run checks", "restart", "quit"... and press Enter.
+  **Ctrl+,** opens settings.
+- **What's new.** After the first run and after each update, a short card lists the headline
+  features with **Try it** buttons (dismiss it with the x; it's back under Settings > About).
 - **Google Play.** Android 16 with the Play Store, so you can install apps the usual way.
 - **PC keyboard and mouse.** Android sees a hardware keyboard, so the on-screen keyboard stays out of
   the way. Right-click (or your mouse's back button) goes Back; Shift+right-click is a real
   right-click. Clipboard is shared both ways.
-- **Sound** plays through your PC, and **the camera** is your PC's webcam.
-- **Windows Hello for Android's fingerprint.** When an Android app asks for your fingerprint,
-  Windows Hello asks instead, above that app's window: face, fingerprint reader or Windows PIN. Set it up once with **Set up fingerprint** in the launcher.
+- **Sound** plays through your PC, and **the camera** is your PC's webcam: Settings > Camera says
+  which one Android uses (and, where this version has it, installs the virtual camera that shows
+  Android the webcam's whole picture).
+- **Windows Hello for Android.** When an Android app asks for your fingerprint, Windows Hello asks
+  instead, above that app's window: face, fingerprint reader or Windows PIN. After each start,
+  Windows Hello can unlock Android too. Settings > Security: **Set up fingerprint**, **Unlock with
+  Windows Hello** on or off, and Android's screen lock.
 - **Recovers by itself.** If an app's connection drops, or Android itself crashes, its window shows
   "Reconnecting..." and brings the app back (starting Android again if needed) instead of vanishing.
+- **Checks itself.** Whether this PC can run Android (virtualization, memory, disk), with a fix
+  where there is one: Settings > Android > **Run checks**, or `python -m androiddesktop doctor`.
 - **Android apps for AI agents.** An MCP server lets Claude (or any MCP client) run Android apps
   hidden, read and operate them, and hand one to you in a normal window when you should see it.
+  Settings > AI agents: **Connect Claude** (Claude Code), **Copy setup** (Claude Desktop) and the
+  agents' recent activity.
+- **Performance.** Settings > Performance: how app windows are drawn right now (smooth, straight from
+  the emulator, or video through scrcpy), and the video quality.
 - **Keeps itself up to date.** The launcher offers each new version, and installs it when you say so.
 - **On your iPhone or iPad.** Send one app (not the whole of Android) to your iPhone or iPad over
   your home Wi-Fi. It runs full screen in Safari, by touch, sized to the device and following its
@@ -87,8 +110,8 @@ Google's Android Emulator, an Android 16 (Google Play) system image, adb and
 Android takes about 30 seconds to start; the very first boot takes a few minutes while Android
 sets itself up. Sign in to Google Play from **Get apps** to install apps.
 
-Two settings live in `%LOCALAPPDATA%\AndroidDesktop\state.json` (edit it while WinDroid isn't
-running):
+Two settings, in Settings > Performance (kept in `%LOCALAPPDATA%\AndroidDesktop\state.json`; they
+apply to windows opened from then on):
 
 - `"app_windows": "scrcpy"` shows every app through scrcpy, as before; the default (`"auto"`) uses
   the emulator's own displays for up to seven windows (see How it works).
@@ -105,7 +128,8 @@ phone would after you unlock it. To stop all this, remove the screen lock in And
 **Settings > Security > Screen lock**.
 
 To skip typing the PIN, tick **Unlock with Windows Hello from now on** under the PIN field (shown when
-Windows Hello is set up on the PC). WinDroid then keeps the PIN, encrypted with DPAPI for your
+Windows Hello is set up on the PC), or turn on **Unlock with Windows Hello** in Settings > Security
+(it asks for the PIN once and has Android check it). WinDroid then keeps the PIN, encrypted with DPAPI for your
 Windows account (`%LOCALAPPDATA%\AndroidDesktop\android-pin.bin`), and after each start of Android
 asks Windows Hello instead, above the launcher or the app window that's waiting. Untick the box
 the next time Android asks for its PIN to forget it. If the PIN changes in Android, it's forgotten
@@ -115,7 +139,8 @@ into a log.
 
 ### Windows Hello for Android's fingerprint
 
-Android here has a (virtual) fingerprint sensor. Click **Set up fingerprint** in the launcher (shown
+Android here has a (virtual) fingerprint sensor. Click **Set up fingerprint** in Settings > Security,
+in the palette (Ctrl+K) or on the launcher's card (shown
 until a fingerprint is added, if Windows Hello is set up on the PC): Android's Settings opens at
 **Add fingerprint**, asks for your Android PIN, and WinDroid touches the sensor each time
 Android asks. From then on, whenever Android waits for a fingerprint, Windows Hello asks you instead,
@@ -161,8 +186,8 @@ commands that print.
 From a source checkout (see Development), `pythonw -m androiddesktop` takes the place of
 `WinDroid.exe` and `python -m androiddesktop` that of `windroid-cli.exe`.
 
-A tray icon (bottom right of the taskbar) opens the launcher and has **Shut down Android** and
-**Quit**. Closing the launcher keeps your app windows running. When no app windows are open, the
+A tray icon (bottom right of the taskbar) opens the launcher and has **Settings**, **Shut down
+Android** and **Quit**. Closing the launcher keeps your app windows running. When no app windows are open, the
 launcher is closed and no AI agent has an app running, Android shuts itself down after 10 minutes.
 
 ### Android apps for AI agents (MCP)
@@ -175,7 +200,11 @@ element id, and can add a screenshot when the tree isn't enough. When you should
 take over, the agent calls `show_to_user` and the app moves into a normal WinDroid window,
 exactly as the agent left it.
 
-Add it to **Claude Code** (`--scope user` makes it available in every project):
+The quickest way: **Connect Claude** in Settings > AI agents (or Ctrl+K, "connect claude") runs the
+command below for you, and **Copy setup** puts Claude Desktop's config on the clipboard.
+
+By hand, add it to **Claude Code** (from a source checkout, use the Python of its venv;
+`--scope user` makes it available in every project):
 
 ```powershell
 claude mcp add --scope user windroid -- "$env:LOCALAPPDATA\Programs\WinDroid\WinDroid.exe" mcp
