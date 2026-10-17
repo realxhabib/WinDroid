@@ -5,13 +5,15 @@ app's own top color, so it reads as part of the app rather than a Windows title 
 native frame underneath: rounded corners, shadow, resize edges, Aero Snap and the Windows 11 Snap
 Layouts flyout on the maximize button.
 
-Below the bar sits the app itself: a scrcpy window rendering an Android virtual display made just
-for this app, re-parented as a borderless child. Its "flex display" follows the window size, so
-resizing the window resizes the app, which re-lays itself out like a desktop app.
+Below the bar sits the app itself, on an Android display made just for this app that follows the
+window's size, so resizing the window resizes the app, which re-lays itself out like a desktop app.
+That display is one of the emulator's own, its frames drawn straight onto a child window of ours
+(emuview.py), when the emulator allows (up to seven windows). Otherwise it's scrcpy's: a virtual
+display, video-encoded inside Android and shown by a scrcpy window re-parented as a borderless child.
 
-If scrcpy goes away without being asked to (it crashed, or Android itself did), the window doesn't
-vanish: it shows "Reconnecting..." and starts the app again on a fresh display, booting Android again
-if needed. If that keeps failing it says so and offers "Try again".
+If the app's display goes away without being asked to (scrcpy crashed, or Android itself did), the
+window doesn't vanish: it shows "Reconnecting..." and starts the app again on a fresh display, booting
+Android again if needed. If that keeps failing it says so and offers "Try again".
 """
 from __future__ import annotations
 
@@ -31,7 +33,7 @@ import win32gui
 import win32process
 from PIL import Image, ImageDraw, ImageFilter
 
-from . import adb, state, winapi
+from . import adb, children, emuview, state, winapi
 from .catalog import App
 from .log import log
 from .paths import LOGS, SERIAL, android_env
@@ -41,7 +43,7 @@ if TYPE_CHECKING:
     from .manager import WindowManager
     from .protected import Protected
 
-WM_APP_EMBED = win32con.WM_APP + 1  # lparam: the scrcpy window
+WM_APP_EMBED = win32con.WM_APP + 1  # lparam: the window showing the app (scrcpy's, or emuview's)
 WM_APP_EXITED = win32con.WM_APP + 2
 WM_APP_FAILED = win32con.WM_APP + 3
 WM_DPICHANGED = 0x02E0
@@ -69,10 +71,26 @@ CLOSE_RED = (196, 43, 28)
 _LAUNCH_LOCK = threading.Lock()
 
 
+# state.json "scrcpy_quality": how scrcpy windows (the fallback) encode the app's video inside Android.
+# (scale of the window's size, bit rate, frames per second). Lower costs Android less CPU, looks softer.
+SCRCPY_QUALITY = {
+    "high": (1.0, "12M", 60),
+    "balanced": (0.75, "6M", 60),
+    "low": (0.5, "3M", 30),
+}
+
+
+def scrcpy_quality() -> tuple[float, str, int]:
+    return SCRCPY_QUALITY.get(state.get("scrcpy_quality") or "high", SCRCPY_QUALITY["high"])
+
+
 def scrcpy_args(package: str, size: tuple[int, int], density: int, pos: tuple[int, int],
-                bg: tuple[int, int, int]) -> list[str]:
+                bg: tuple[int, int, int], quality: tuple[float, str, int] = SCRCPY_QUALITY["high"]) -> list[str]:
     """scrcpy's command line: one app on a virtual display of its own, its window at a screen position."""
     (w, h), (x, y) = size, pos
+    scale, bit_rate, fps = quality
+    # --max-size caps the video, not the display: the app still lays out for the whole window.
+    smaller = [f"--max-size={max(64, round(max(w, h) * scale) // 8 * 8)}"] if scale < 1 else []
     return [str(SCRCPY_EXE), "-s", SERIAL, f"--new-display={w}x{h}/{density}", "--flex-display",
             f"--start-app={package}", "--no-vd-system-decorations", "--keep-active",
             "--no-audio",  # the emulator already plays Android's sound on the PC
@@ -84,7 +102,7 @@ def scrcpy_args(package: str, size: tuple[int, int], density: int, pos: tuple[in
             "--keyboard=uhid", "--display-ime-policy=local",
             # Right-click and the mouse's back button go Back; Shift+right-click is a real right-click.
             "--mouse-bind=b+b+:++++",
-            "--video-codec=h264", "--video-bit-rate=12M", "--max-fps=60",
+            "--video-codec=h264", f"--video-bit-rate={bit_rate}", f"--max-fps={fps}", *smaller,
             "--background-color=%02x%02x%02x" % bg[:3], "--no-terminal-title"]
 
 
@@ -129,6 +147,7 @@ class AppWindow:
         self.status = STARTING
         self.error = ""
         self.protected: Protected | None = None  # a FLAG_SECURE screen, shown via protected.py
+        self.surface: emuview.Surface | None = None  # the app on an emulator display, instead of scrcpy
         self._gen = 0  # one per scrcpy launch; messages from an older launch are ignored
         self._shown = 0  # the launch whose window is embedded
         self._handled = 0  # the last launch whose end we've dealt with
@@ -257,6 +276,9 @@ class AppWindow:
         win32gui.InvalidateRect(self.hwnd, None, False)
         self._start()
 
+    def _density(self) -> int:
+        return round(160 * self.scale * float(state.get("density", 1.0)))
+
     def _launch(self, gen: int) -> None:
         """Worker thread: make sure Android is up, then start this app on a virtual display of its own."""
         try:
@@ -265,8 +287,13 @@ class AppWindow:
             cw, ch = self._client()
             w, h = cw, max(ch - self.bar, 1)
             x, y = win32gui.ClientToScreen(self.hwnd, (0, self.bar))
-            density = round(160 * self.scale * float(state.get("density", 1.0)))
-            args = scrcpy_args(self.app.package, (w, h), density, (x, y), self.bg)
+            density = self._density()
+            point = emuview.link.usable()
+            if point and self._open_surface(gen, point, (w, h), density):
+                return
+            if self.closing or gen != self._gen:
+                return
+            args = scrcpy_args(self.app.package, (w, h), density, (x, y), self.bg, scrcpy_quality())
             (LOGS / "windows").mkdir(parents=True, exist_ok=True)
             # One at a time: every scrcpy pushes its server to the same path on the device, and
             # simultaneous starts trip over each other ("Server connection failed").
@@ -275,9 +302,10 @@ class AppWindow:
                 if self.closing or gen != self._gen:
                     return
                 self.display_id = None
-                self.proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                             env=android_env(), creationflags=adb.CREATE_NO_WINDOW, text=True,
-                                             encoding="utf-8", errors="replace")
+                # Ends with us, however we end: without its window, scrcpy is no use to anyone.
+                self.proc = children.popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                           env=android_env(), creationflags=adb.CREATE_NO_WINDOW, text=True,
+                                           encoding="utf-8", errors="replace")
                 threading.Thread(target=self._read_output, args=(self.proc, gen), daemon=True).start()
                 end = time.monotonic() + 30
                 while self.display_id is None and self._shown != gen:
@@ -297,6 +325,63 @@ class AppWindow:
                 self.error = str(e)
             if self.hwnd and win32gui.IsWindow(self.hwnd):
                 win32gui.PostMessage(self.hwnd, WM_APP_FAILED, gen, 0)
+
+    def _open_surface(self, gen: int, point: tuple[int, str], size: tuple[int, int], density: int) -> bool:
+        """Worker thread: the app on an emulator display of its own (emuview.py). True once it shows,
+        or the window went away meanwhile; False to use scrcpy instead."""
+        surface = self.surface = emuview.Surface(self, point, gen)
+        try:
+            self.display_id = surface.open(self.app, size, density)
+            attached = threading.Event()
+            problem: list[Exception] = []
+
+            def attach() -> None:  # on the window thread, which owns the view
+                try:
+                    if self.closing or gen != self._gen:
+                        raise emuview.Unusable("closed")
+                    cw, ch = self._client()
+                    surface.attach(self.hwnd, (0, self.bar, cw, max(ch - self.bar, 1)))
+                except Exception as e:
+                    problem.append(e)
+                finally:
+                    attached.set()
+            self.manager.call(attach)
+            if not attached.wait(15):
+                raise RuntimeError("the window didn't answer")
+            if problem:
+                raise problem[0]
+            if not surface.first_frame.wait(emuview.FIRST_FRAME_SECS):
+                log(f"{self.app.package}: no frame from emulator display {surface.slot} yet")
+            elif surface.frame != surface.size:
+                # A windowless emulator streams its extra displays at the main display's size.
+                emuview.link.disable(point, f"frames are {surface.frame}, the display {surface.size}")
+                raise emuview.Unusable("wrong frame size")
+            log(f"{self.app.package}: on emulator display {surface.slot} (display {self.display_id}, "
+                f"{surface.size[0]}x{surface.size[1]}/{density})")
+            win32gui.PostMessage(self.hwnd, WM_APP_EMBED, gen, surface.view)
+            return True
+        except Exception as e:
+            if self.surface is surface:
+                self.surface, self.display_id = None, None
+            surface.close()
+            self.manager.call(surface.destroy_view)
+            if self.closing or gen != self._gen:
+                return True
+            log(f"{self.app.package}: using scrcpy: {e if isinstance(e, emuview.Unusable) else repr(e)}")
+            return False
+
+    def surface_lost(self, surface: emuview.Surface) -> None:
+        """Any thread: the emulator display's frames ended for good (Android or the emulator went away)."""
+        if surface is self.surface and self.hwnd and win32gui.IsWindow(self.hwnd):
+            win32gui.PostMessage(self.hwnd, WM_APP_EXITED, surface.gen, 0)
+
+    def _drop_surface(self) -> None:
+        """Window thread: close the emulator display (and the app on it) behind the scenes."""
+        surface, self.surface = self.surface, None
+        if surface:
+            # Not a daemon: quitting waits for it, so the display doesn't linger.
+            threading.Thread(target=surface.close, name=f"close-{self.app.package}").start()
+            surface.destroy_view()
 
     def _read_output(self, proc: subprocess.Popen, gen: int) -> None:
         # The first launch starts the log afresh; reconnects append, so the reason for a crash survives.
@@ -328,9 +413,10 @@ class AppWindow:
         if self.closing:
             win32gui.DestroyWindow(self.hwnd)
             return
-        proc, was_running = self.proc, self.status == RUNNING
+        proc, was_running, on_surface = self.proc, self.status == RUNNING, self.surface is not None
         if proc and proc.poll() is None:
             proc.kill()
+        self._drop_surface()
         self.child, self.display_id = 0, None
         if not (self.manager.accepting and self.manager.vm.keep_running):
             # Android was shut down on purpose, or we're quitting: nothing to come back to.
@@ -338,8 +424,8 @@ class AppWindow:
             return
         now = time.monotonic()
         if was_running:
-            log(f"{self.app.package}: scrcpy exited (code {proc.poll() if proc else None}) "
-                f"after {now - self._embedded_at:.0f}s; reconnecting")
+            gone = "its emulator display went away" if on_surface else                 f"scrcpy exited (code {proc.poll() if proc else None})"
+            log(f"{self.app.package}: {gone} after {now - self._embedded_at:.0f}s; reconnecting")
             if now - self._embedded_at > STABLE_SECS:
                 self._attempt = 0
         if self._embedded_at and self._attempt < len(RETRY_DELAYS):  # it worked before: try again
@@ -459,6 +545,8 @@ class AppWindow:
         cw, ch = self._client()
         flags = win32con.SWP_NOZORDER | win32con.SWP_NOACTIVATE | (win32con.SWP_FRAMECHANGED if frame_changed else 0)
         win32gui.SetWindowPos(self.child, 0, 0, self.bar, cw, max(ch - self.bar, 1), flags)
+        if self.surface:
+            self.surface.resize(cw, max(ch - self.bar, 1), self._density())
         if self.protected:
             self.protected.place()
 
@@ -481,7 +569,7 @@ class AppWindow:
         if self._child_misplaced():  # scrcpy sized its own window once the video started
             self._layout()
         cw, _ = self._client()
-        img = winapi.capture(self.view, cw, 3)
+        img = self.surface.capture(cw, 3) if self.surface else winapi.capture(self.view, cw, 3)
         if img is None:
             return
         colors = img.crop((0, 1, cw, 2)).getcolors(cw)
@@ -626,7 +714,9 @@ class AppWindow:
 
     # ------------------------------------------------------------------ actions
     def _act(self, name: str) -> None:
-        if name == "back" and self.display_id is not None:
+        if name == "back" and self.surface:
+            self.surface.back()
+        elif name == "back" and self.display_id is not None:
             display = self.protected.input_display if self.protected else self.display_id
             threading.Thread(target=adb.shell, args=(f"input -d {display} keyevent 4",), daemon=True).start()
         elif name == "pin":
@@ -688,6 +778,8 @@ class AppWindow:
             return 0
         if msg == win32con.WM_ACTIVATE:
             self.active = (wp & 0xFFFF) != win32con.WA_INACTIVE
+            if self.active and self.surface:
+                self.surface.wake()
             if self.active and self.child:
                 winapi.user32.SetFocus(self.view)
             self._repaint_bar()
@@ -780,6 +872,12 @@ class AppWindow:
             return 0
         if msg == win32con.WM_CLOSE:
             self._save_rect()
+            if self.surface:
+                self.closing = True
+                win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
+                self._drop_surface()
+                win32gui.DestroyWindow(hwnd)
+                return 0
             if self.proc and self.proc.poll() is None and self.child:
                 if not self.closing:
                     self.closing = True
@@ -799,6 +897,7 @@ class AppWindow:
                 self.protected.end(remove=True)
             if self.proc and self.proc.poll() is None:
                 self.proc.kill()
+            self._drop_surface()
             self.manager.closed(self)
             return 0
         return win32gui.DefWindowProc(hwnd, msg, wp, lp)

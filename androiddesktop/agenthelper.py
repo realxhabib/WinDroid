@@ -15,7 +15,6 @@ from collections import deque
 
 from . import adb
 from .catalog import HELPER
-from .paths import ADB_EXE, SERIAL, android_env
 
 DEVICE_JAR = "/data/local/tmp/androiddesktop-agent.jar"
 VERSION = 2  # AgentHelper.VERSION
@@ -71,10 +70,8 @@ class Helper:
             raise HelperError("Android isn't running")
         self._push()
         self._replies = queue.Queue()
-        self._proc = subprocess.Popen(
-            [str(ADB_EXE), "-s", SERIAL, "shell", f"CLASSPATH={DEVICE_JAR} app_process / AgentHelper"],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=android_env(),
-            creationflags=adb.CREATE_NO_WINDOW)
+        self._proc = adb.start("shell", f"CLASSPATH={DEVICE_JAR} app_process / AgentHelper",
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         threading.Thread(target=self._read, args=(self._proc, self._replies), daemon=True,
                          name="agent-helper").start()
         threading.Thread(target=self._read_errors, args=(self._proc,), daemon=True).start()

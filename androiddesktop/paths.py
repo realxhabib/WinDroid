@@ -26,6 +26,7 @@ DEFAULT_SERIAL = "emulator-5584"  # port 5584: off the default 5554, so we never
 SERIAL = os.environ.get("ANDROIDDESKTOP_SERIAL") or DEFAULT_SERIAL
 INSTANCE = "" if SERIAL == DEFAULT_SERIAL else f".{SERIAL}"
 EMULATOR_PORT = int(SERIAL[len("emulator-"):]) if re.fullmatch(r"emulator-\d+", SERIAL) else 5584
+GRPC_PORT = EMULATOR_PORT + 3000  # the emulator's gRPC control API (emuview.py)
 
 EMULATOR_EXE = SDK / "emulator" / "emulator.exe"
 ADB_EXE = SDK / "platform-tools" / "adb.exe"

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import subprocess
 
+from . import children
 from .paths import ADB_EXE, SERIAL, android_env
 
 CREATE_NO_WINDOW = 0x08000000
@@ -16,6 +17,13 @@ def run(*args: str, timeout: float = 30, check: bool = False, serial: bool = Tru
 
 def shell(command: str, timeout: float = 30) -> str:
     return run("shell", command, timeout=timeout).stdout
+
+
+def start(*args: str, **popen_args) -> subprocess.Popen:
+    """A long-lived adb, e.g. an `adb shell` streaming logcat. It ends when this process does, however
+    that ends (children.py)."""
+    return children.popen([str(ADB_EXE), "-s", SERIAL, *args], env=android_env(), creationflags=CREATE_NO_WINDOW,
+                          **popen_args)
 
 
 def online() -> bool:
