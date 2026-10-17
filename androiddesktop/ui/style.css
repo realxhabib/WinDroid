@@ -314,6 +314,11 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: def
 .notice.hello { margin: 0 0 12px; }
 .notice.hello > .glyph { color: var(--accent); }
 
+/* ------------------------------------------------------------ a newer WinDroid */
+.notice.update { margin: 0 0 12px; }
+.notice.update > .glyph { color: var(--blue); }
+.notice.update .bar { margin-top: 10px; }
+
 /* ------------------------------------------------------------ menu & toast */
 .menu {
   position: fixed; z-index: 10; min-width: 190px; padding: 4px; border-radius: 10px;

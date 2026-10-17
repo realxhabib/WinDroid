@@ -1,4 +1,4 @@
-# Android Desktop
+# WinDroid
 
 Android apps on Windows, each in its own window. Android runs as a headless virtual machine on your
 PC (no phone needed); every app you open gets a separate, frameless, resizable window that you can
@@ -28,39 +28,60 @@ drag, snap, pin to the taskbar or maximize like any other Windows app.
   "Reconnecting..." and brings the app back (starting Android again if needed) instead of vanishing.
 - **Android apps for AI agents.** An MCP server lets Claude (or any MCP client) run Android apps
   hidden, read and operate them, and hand one to you in a normal window when you should see it.
+- **Keeps itself up to date.** The launcher offers each new version, and installs it when you say so.
 
 Everything runs locally.
 
 ## Requirements
 
-- Windows 10/11 (64-bit) with hardware virtualization and the **Windows Hypervisor Platform**
-  feature (on by default when Hyper-V, WSL2 or Windows Sandbox are in use).
-- Python 3.11+.
+- Windows 10 (version 1809 or later) or Windows 11, 64-bit, with hardware virtualization and the
+  **Windows Hypervisor Platform** feature (on by default when Hyper-V, WSL2 or Windows Sandbox are in
+  use).
 - About 7 GB of disk (more as you install apps), 2.4 GB of it downloaded once on first run.
 - 8 GB of RAM or more. Android gets 8 GB of it on a PC with 24 GB or more (6 GB from 14 GB, else
   4 GB), and up to 6 processor cores (half the PC's threads, at least 4).
 
-Android Desktop checks these itself, before setup and before every start of Android, and shows what to
-fix in the launcher (for example a **Turn it on** button for Windows Hypervisor Platform). To see the
-checks from a console: `python -m androiddesktop doctor`.
+WinDroid checks these itself, before setup and before every start of Android, and shows what to
+fix in the launcher (for example a **Turn it on** button for Windows Hypervisor Platform).
 
-## Run it
+## Install
+
+1. Download **WinDroid-Setup-*version*.exe** from the
+   [latest release](https://github.com/realxhabib/WinDroid/releases/latest).
+2. Run it. It installs WinDroid for your Windows account only, so it doesn't ask for administrator
+   rights, and adds **WinDroid** to the Start menu. There's no Python or anything else to install.
+
+The installer isn't code-signed yet, so **Microsoft Defender SmartScreen** may stop it with
+"Windows protected your PC". Click **More info**, then **Run anyway**. To make sure the download is
+the one published, compare its SHA-256 with the `.sha256` file next to it in the release:
 
 ```powershell
-py -3.14 -m venv .venv
-.venv\Scripts\pip install -e .
-.venv\Scripts\pythonw -m androiddesktop
+Get-FileHash "$env:USERPROFILE\Downloads\WinDroid-Setup-0.1.0.exe"
 ```
 
-The first start shows **Set up Android**, which downloads Google's Android Emulator, an Android 16
-(Google Play) system image, adb and [scrcpy](https://github.com/Genymobile/scrcpy). All are
-checksum-verified and stored in `%LOCALAPPDATA%\AndroidDesktop`. After that, the launcher adds
-itself to the Start menu as **Android Desktop**.
+**Updates.** Once a day, WinDroid asks GitHub whether there's a newer release. If there is, the
+launcher says so; click **Update** and it downloads the new installer, checks it against its published
+SHA-256, closes your app windows, shuts Android down, installs the new version and starts again.
+**What's new** opens the release notes, and the cross puts the offer away until WinDroid next starts.
+
+**Uninstall** from **Settings > Apps > Installed apps > WinDroid > Uninstall** (or Control Panel's
+Programs and Features). That shuts Android down and removes the program, its Start menu entry and the
+app shortcuts WinDroid made (Start menu and desktop). Then it asks whether to delete Android as well:
+the Android runtime WinDroid downloaded and everything in Android, your apps, their data and your
+Google sign-in (`%LOCALAPPDATA%\AndroidDesktop`, about 7 GB). Keep it if you might install WinDroid
+again: it carries on where you left off.
+
+## Use it
+
+Open **WinDroid** from the Start menu. The first start shows **Set up Android**, which downloads
+Google's Android Emulator, an Android 16 (Google Play) system image, adb and
+[scrcpy](https://github.com/Genymobile/scrcpy). All are checksum-verified and stored in
+`%LOCALAPPDATA%\AndroidDesktop` (the folder keeps WinDroid's first name, Android Desktop).
 
 Android takes about 30 seconds to start; the very first boot takes a few minutes while Android
 sets itself up. Sign in to Google Play from **Get apps** to install apps.
 
-Two settings live in `%LOCALAPPDATA%\AndroidDesktop\state.json` (edit it while Android Desktop isn't
+Two settings live in `%LOCALAPPDATA%\AndroidDesktop\state.json` (edit it while WinDroid isn't
 running):
 
 - `"app_windows": "scrcpy"` shows every app through scrcpy, as before; the default (`"auto"`) uses
@@ -76,7 +97,7 @@ tries count towards Android's own lockout. To stop this, remove the screen lock 
 **Settings > Security > Screen lock**.
 
 To skip typing the PIN, tick **Unlock with Windows Hello from now on** under the PIN field (shown when
-Windows Hello is set up on the PC). Android Desktop then keeps the PIN, encrypted with DPAPI for your
+Windows Hello is set up on the PC). WinDroid then keeps the PIN, encrypted with DPAPI for your
 Windows account (`%LOCALAPPDATA%\AndroidDesktop\android-pin.bin`), and after each start of Android
 asks Windows Hello instead, above the launcher or the app window that's waiting. Untick the box
 the next time Android asks for its PIN to forget it. If the PIN changes in Android, it's forgotten
@@ -88,23 +109,30 @@ into a log.
 
 Android here has a (virtual) fingerprint sensor. Click **Set up fingerprint** in the launcher (shown
 until a fingerprint is added, if Windows Hello is set up on the PC): Android's Settings opens at
-**Add fingerprint**, asks for your Android PIN, and Android Desktop touches the sensor each time
+**Add fingerprint**, asks for your Android PIN, and WinDroid touches the sensor each time
 Android asks. From then on, whenever Android waits for a fingerprint, Windows Hello asks you instead,
 above the window of the app that's asking, and touches the sensor once it's you. Canceling Windows
 Hello leaves the finger off.
 
 ### Command line
 
+WinDroid is installed in `%LOCALAPPDATA%\Programs\WinDroid`. `WinDroid.exe` never opens a console
+window, so it's what shortcuts run; `windroid-cli.exe` is the same program for a console, for the
+commands that print.
+
 | Command | |
 |---|---|
-| `pythonw -m androiddesktop` | Open the launcher (starts Android if needed) |
-| `pythonw -m androiddesktop open <package>` | Open one app in its own window, e.g. `com.android.chrome` |
-| `pythonw -m androiddesktop stop` | Close every app window and shut Android down |
-| `pythonw -m androiddesktop quit` | ...and exit Android Desktop |
-| `python -m androiddesktop setup` | Download and install the Android runtime from a console |
-| `python -m androiddesktop doctor` | Check whether this PC can run Android, and print what's wrong |
-| `pythonw -m androiddesktop boot` | Start Android without showing anything (what an AI agent's session asks for) |
-| `python -m androiddesktop mcp` | The MCP server for AI agents (below), over stdin/stdout |
+| `WinDroid.exe` | Open the launcher (starts Android if needed) |
+| `WinDroid.exe open <package>` | Open one app in its own window, e.g. `com.android.chrome` |
+| `WinDroid.exe stop` | Close every app window and shut Android down |
+| `WinDroid.exe quit` | ...and exit WinDroid |
+| `WinDroid.exe boot` | Start Android without showing anything (what an AI agent's session asks for) |
+| `WinDroid.exe mcp` | The MCP server for AI agents (below), over stdin/stdout |
+| `windroid-cli.exe setup` | Download and install the Android runtime, with progress in the console |
+| `windroid-cli.exe doctor` | Check whether this PC can run Android, and print what's wrong |
+
+From a source checkout (see Development), `pythonw -m androiddesktop` takes the place of
+`WinDroid.exe` and `python -m androiddesktop` that of `windroid-cli.exe`.
 
 A tray icon (bottom right of the taskbar) opens the launcher and has **Shut down Android** and
 **Quit**. Closing the launcher keeps your app windows running. When no app windows are open, the
@@ -112,35 +140,37 @@ launcher is closed and no AI agent has an app running, Android shuts itself down
 
 ### Android apps for AI agents (MCP)
 
-Android Desktop is also an MCP server, so an AI agent such as Claude can use Android apps for you.
+WinDroid is also an MCP server, so an AI agent such as Claude can use Android apps for you.
 By default the agent's apps run **hidden**: each on an Android display of its own with no window, so
 nothing on your screen changes while it works. The agent reads an app as a compact accessibility
 tree (about 2 KB of JSON for a typical screen, read in under 100 ms), taps, types and scrolls by
 element id, and can add a screenshot when the tree isn't enough. When you should see something, or
-take over, the agent calls `show_to_user` and the app moves into a normal Android Desktop window,
+take over, the agent calls `show_to_user` and the app moves into a normal WinDroid window,
 exactly as the agent left it.
 
-Add it to **Claude Code** (use the Python of the venv you installed Android Desktop into; `--scope
-user` makes it available in every project):
+Add it to **Claude Code** (`--scope user` makes it available in every project):
 
 ```powershell
-claude mcp add --scope user androiddesktop -- C:\path\to\android-desktop\.venv\Scripts\python.exe -m androiddesktop mcp
+claude mcp add --scope user windroid -- "$env:LOCALAPPDATA\Programs\WinDroid\WinDroid.exe" mcp
 ```
 
-Or to **Claude Desktop**, in `%APPDATA%\Claude\claude_desktop_config.json`, then restart it:
+Or to **Claude Desktop**, in `%APPDATA%\Claude\claude_desktop_config.json` (with your Windows user
+name), then restart it:
 
 ```json
 {
   "mcpServers": {
-    "androiddesktop": {
-      "command": "C:\\path\\to\\android-desktop\\.venv\\Scripts\\python.exe",
-      "args": ["-m", "androiddesktop", "mcp"]
+    "windroid": {
+      "command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\WinDroid\\WinDroid.exe",
+      "args": ["mcp"]
     }
   }
 }
 ```
 
-Then ask, for example: *"Using Android Desktop, set a 10-minute timer in Clock and tell me how long
+From a source checkout, the command is the venv's `python.exe` with `-m androiddesktop mcp`.
+
+Then ask, for example: *"Using WinDroid, set a 10-minute timer in Clock and tell me how long
 is left."* The tools:
 
 | Tool | |
@@ -167,6 +197,10 @@ Things worth knowing:
 - **Logs.** Every tool call goes to `%LOCALAPPDATA%\AndroidDesktop\logs\agent.log`, with its result
   and timing. Text typed with `type_text` is logged as its length only, since it may be a password.
 - **Cleanup.** Ending a session, or the MCP server (when Claude Code exits), closes its hidden apps.
+
+Logs: `%LOCALAPPDATA%\AndroidDesktop\logs` (`androiddesktop.log`, `emulator.log`, `agent.log` for AI
+agents, and one file per app window under `windows\`). Uncaught errors from any thread are logged
+too, with their traceback.
 
 ## How it works
 
@@ -258,6 +292,11 @@ Launcher (WebView2)      App window (Win32, frameless)            App window (8t
   launchable apps and renders their real icons, including adaptive icons with a rounded-square mask.
 - **Agent** (`app.py`, `manager.py`): one process owns the VM, the windows, the tray icon and the
   launcher. Start menu shortcuts send their request to the running agent via `WM_COPYDATA`.
+- **Installed program and updates** (`packaging/`, `update.py`): see Development > Build the installer.
+  The updater reads `api.github.com/repos/realxhabib/WinDroid/releases/latest` (at most once a day,
+  remembered in `state.json`), and runs a downloaded installer only if its SHA-256 matches the
+  `.sha256` published with it, with `/SILENT /relaunch=1`: the installer shows its progress and starts
+  WinDroid again when it's done.
 - **Launcher** (`ui/`): HTML/CSS in a frameless WebView2 window (pywebview).
 - **Agent sessions** (`ghost.py`, `mcp.py`, `uitree.py`, `agenthelper.py` and
   `helper/src/AgentHelper.java`): the MCP server keeps one helper process running inside Android
@@ -275,15 +314,30 @@ Launcher (WebView2)      App window (Win32, frameless)            App window (8t
   Android move the app's existing task there, and `AppWindow.adopt` moves anything left behind. A
   session in a window follows its app, including onto `protected.py`'s secure display.
 
-Logs: `%LOCALAPPDATA%\AndroidDesktop\logs` (`androiddesktop.log`, `emulator.log`, `agent.log` for AI
-agents, and one file per app window under `windows\`). Uncaught errors from any thread are logged
-too, with their traceback.
-
 ## Development
 
-- `python -m unittest` runs the unit tests (no Android needed): PC checks, VM crash detection, and
-  parsing what Android and scrcpy report, including the fingerprint prompts the Windows Hello bridge
-  reacts to and what it does about them.
+### Run from source
+
+Needs Python 3.11 or later (the installer is built with 3.14) and git:
+
+```powershell
+git clone https://github.com/realxhabib/WinDroid
+cd WinDroid
+py -3.14 -m venv .venv
+.venv\Scripts\pip install -e .
+.venv\Scripts\pythonw -m androiddesktop
+```
+
+The Python package is `androiddesktop`, WinDroid's first name. Run from source, WinDroid puts its
+launcher in the Start menu itself (as **WinDroid**) and never updates itself; it shares
+`%LOCALAPPDATA%\AndroidDesktop`, and so Android, with an installed WinDroid.
+
+### Tests and tools
+
+- `python -m unittest` runs the unit tests (no Android needed): PC checks, VM crash detection,
+  parsing what Android and scrcpy report (including the fingerprint prompts the Windows Hello bridge
+  reacts to and what it does about them), updates, and the shortcuts and command lines WinDroid
+  starts itself with. `python -m pyflakes androiddesktop tools tests` is the lint.
 - `python tools/smoke_test.py [package]` checks app windows end to end against the real Android: the
   app opens and draws, follows a resize, comes back after its display goes away (and, on an emulator
   display, after its frame stream drops), and cleans up on close. `--scrcpy` checks the scrcpy
@@ -294,7 +348,12 @@ too, with their traceback.
   talks to it: Clock starts hidden, gets a 10-minute timer, the time left is read back, no window
   appears on the PC until `show_to_user` puts Clock in one, timer still running.
 - `ANDROIDDESKTOP_SERIAL=emulator-5620` (any adb serial) points everything at another Android, such
-  as a test emulator, which then gets an agent process and app list of its own, apart from yours.
+  as a test emulator, which then gets an agent process and app list of its own, apart from yours. An
+  emulator serial's port is where WinDroid starts its Android, if it has to.
+- `ANDROIDDESKTOP_DATA=<folder>` keeps everything in that folder instead of
+  `%LOCALAPPDATA%\AndroidDesktop`. With both set, you get a separate WinDroid, with its own Android,
+  that never touches yours: handy for trying an installed build. (The uninstaller's "delete Android"
+  question then means that folder too.)
 - `python tools/try_windows.py <package>...` opens app windows without the launcher.
 - `python tools/snap.py "<window title>" out.png` captures one window, for checking the UI.
 - `python tools/build_helper.py` rebuilds `androiddesktop/assets/appcatalog.jar` from
@@ -302,6 +361,42 @@ too, with their traceback.
   `%LOCALAPPDATA%\AndroidDesktop\devtools` (see the script). The built jar is committed, so
   running the app doesn't need them.
 - `python tools/make_icon.py` redraws the app icon.
+
+### Build the installer
+
+```powershell
+.venv\Scripts\pip install -r packaging\requirements.txt
+winget install JRSoftware.InnoSetup
+.venv\Scripts\python tools\build_installer.py
+```
+
+That makes `dist\WinDroid-Setup-<version>.exe` and its `.sha256`:
+
+- [PyInstaller](https://pyinstaller.org) (`packaging/windroid.spec`) freezes the package, its assets
+  and its libraries (pywebview and pythonnet, pywin32, Pillow) into `dist\WinDroid`: `WinDroid.exe`
+  without a console and `windroid-cli.exe` with one, sharing `_internal\`. When frozen,
+  `winapi.command()` makes shortcuts, taskbar pins and the MCP server's boot request run
+  `WinDroid.exe` instead of `pythonw -m androiddesktop`.
+- A smoke test runs `windroid-cli.exe doctor` and the MCP server in `WinDroid.exe` over pipes.
+- [Inno Setup](https://jrsoftware.org/isinfo.php) (`packaging/windroid.iss`) packs it into a
+  per-user installer: `%LOCALAPPDATA%\Programs\WinDroid`, a Start menu entry with the launcher's
+  AppUserModelID, an Apps & features entry. Installing over an older version has it quit first
+  (`WinDroid.exe quit` returns once WinDroid has exited); the uninstaller runs `WinDroid.exe uninstall`
+  (quit, and remove the app shortcuts WinDroid made) and then asks about the data folder.
+
+### Release
+
+Set the version in `androiddesktop/__init__.py`, commit, then push a tag for it:
+
+```powershell
+git tag v0.2.0
+git push origin v0.2.0
+```
+
+`.github/workflows/release.yml` checks that the tag matches the version, runs the lint and the unit
+tests, builds the installer on Windows and publishes it with its `.sha256` as a GitHub Release.
+Installed copies find it within a day (`androiddesktop/update.py`). Run the workflow by hand to
+build an installer without publishing it.
 
 ## Known limitations
 
@@ -334,3 +429,4 @@ too, with their traceback.
 - In scrcpy windows, protected (`FLAG_SECURE`) screens update a few times a second instead of at full speed, and typing
   on them is limited to plain ASCII text. If one can't be moved to a secure display, the window says
   so (close it and reopen the app to leave that screen); it never just goes black.
+- The installer isn't code-signed, so SmartScreen warns about it (see Install).

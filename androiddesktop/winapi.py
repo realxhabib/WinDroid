@@ -1,8 +1,10 @@
-"""Small Win32 helpers: DPI, DWM styling, taskbar identity, icons and drawing PIL images into a DC."""
+"""Small Win32 helpers: DPI, DWM styling, taskbar identity, icons, drawing PIL images into a DC, and
+the command line that starts WinDroid itself."""
 from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wt
+import subprocess
 import sys
 from pathlib import Path
 
@@ -141,22 +143,35 @@ def set_window_icon(hwnd: int, ico: Path, dpi: int) -> None:
         win32gui.SendMessage(hwnd, win32con.WM_SETICON, win32con.ICON_BIG, big)
 
 
-def pythonw() -> str:
+FROZEN = getattr(sys, "frozen", False)  # the installed WinDroid (built by PyInstaller), not a source checkout
+GUI_EXE = "WinDroid.exe"  # the installed program; windroid-cli.exe beside it is the same with a console
+
+
+def command(*args: str) -> list[str]:
+    """The command line that runs WinDroid with these arguments, with no console window: the installed
+    WinDroid.exe, or pythonw -m androiddesktop in a source checkout."""
     exe = Path(sys.executable)
+    if FROZEN:
+        return [str(exe.with_name(GUI_EXE)), *args]
     w = exe.with_name("pythonw.exe")
-    return str(w if w.exists() else exe)
+    return [str(w if w.exists() else exe), "-m", "androiddesktop", *args]
 
 
-def set_app_identity(hwnd: int, app_id: str, name: str, relaunch_args: str) -> None:
-    """Give a window its own taskbar button (grouping, pin-to-taskbar relaunch). The button shows the
-    window's own icon (set_window_icon). No RelaunchIconResource: Windows 11's taskbar draws a blank
-    page for one that points into %LOCALAPPDATA% (only %TEMP% and system files worked when tested),
-    and with none set it uses the window's icon."""
+def console_exe() -> bool:
+    """Running as the installed windroid-cli.exe, which has a console (WinDroid.exe has none)."""
+    return FROZEN and Path(sys.executable).name.lower() != GUI_EXE.lower()
+
+
+def set_app_identity(hwnd: int, app_id: str, name: str, relaunch: list[str]) -> None:
+    """Give a window its own taskbar button (grouping, pin-to-taskbar relaunch with these arguments). The
+    button shows the window's own icon (set_window_icon). No RelaunchIconResource: Windows 11's taskbar
+    draws a blank page for one that points into %LOCALAPPDATA% (only %TEMP% and system files worked when
+    tested), and with none set it uses the window's icon."""
     try:
         store = propsys.SHGetPropertyStoreForWindow(hwnd, propsys.IID_IPropertyStore)
         store.SetValue(pscon.PKEY_AppUserModel_ID, propsys.PROPVARIANTType(app_id, pythoncom.VT_LPWSTR))
         store.SetValue(pscon.PKEY_AppUserModel_RelaunchCommand,
-                       propsys.PROPVARIANTType(f'"{pythonw()}" {relaunch_args}', pythoncom.VT_LPWSTR))
+                       propsys.PROPVARIANTType(subprocess.list2cmdline(command(*relaunch)), pythoncom.VT_LPWSTR))
         store.SetValue(pscon.PKEY_AppUserModel_RelaunchDisplayNameResource,
                        propsys.PROPVARIANTType(name, pythoncom.VT_LPWSTR))
         store.Commit()

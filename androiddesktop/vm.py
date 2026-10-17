@@ -234,7 +234,8 @@ class VM:
         log("vm: emulator ignored 'emu kill', ending its processes")
         subprocess.run(["powershell", "-NoProfile", "-Command",
                         "Get-CimInstance Win32_Process | Where-Object { ($_.Name -like 'qemu-system*' -or "
-                        "$_.Name -eq 'emulator.exe') -and $_.CommandLine -like '*-avd " + AVD_NAME + "*' } | "
+                        "$_.Name -eq 'emulator.exe') -and $_.CommandLine -like "
+                        f"'*-avd {AVD_NAME} -port {EMULATOR_PORT} *' }} | "  # ours only, not another instance's
                         "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"],
                        creationflags=adb.CREATE_NO_WINDOW, timeout=60, capture_output=True)
         for _ in range(20):

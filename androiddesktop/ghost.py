@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import re
 import subprocess
-import sys
 import threading
 import time
 from dataclasses import dataclass, field, replace
@@ -40,7 +39,7 @@ CHANGE_MS, QUIET_MS, SETTLE_MS = 800, 300, 3000
 SECURE = ("secure screen: needs the user. Android marks this screen private (a PIN, password or payment "
           "screen), so it can't be read or operated here. Call show_to_user to hand it to the user, and "
           "read_screen again once they're done.")
-LOCKED = ("Android is locked: the user has to unlock it in Android Desktop (with their PIN) before apps "
+LOCKED = ("Android is locked: the user has to unlock it in WinDroid (with their PIN) before apps "
           "can run.")
 
 
@@ -104,15 +103,13 @@ def describe(n: uitree.Node) -> str:
 
 
 def ask_agent(request: dict, argv: list[str]) -> None:
-    """Hand a request to Android Desktop's agent process (it owns the windows and the VM), starting it
-    if it isn't running, the way a Start menu shortcut does."""
+    """Hand a request to WinDroid's agent process (it owns the windows and the VM), starting it if it
+    isn't running, the way a Start menu shortcut does."""
     from .manager import send_to_agent  # the windowing side: only needed here
+    from .winapi import command
     if send_to_agent(request):
         return
-    exe = Path(sys.executable)
-    pythonw = exe.with_name("pythonw.exe")
-    subprocess.Popen([str(pythonw if pythonw.exists() else exe), "-m", "androiddesktop", *argv],
-                     cwd=str(Path(__file__).resolve().parents[1]), stdin=subprocess.DEVNULL,
+    subprocess.Popen(command(*argv), cwd=str(Path(__file__).resolve().parents[1]), stdin=subprocess.DEVNULL,
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP)
 
@@ -171,15 +168,15 @@ class Sessions:
     def ensure_android(self) -> None:
         if not (adb.online() and adb.booted()):
             if not runtime.installed():
-                raise GhostError("Android Desktop isn't set up yet: ask the user to open it and click Set up "
+                raise GhostError("WinDroid isn't set up yet: ask the user to open it and click Set up "
                                  "Android (a one-time download).")
-            agent_log("Android isn't running: asking Android Desktop to start it")
+            agent_log("Android isn't running: asking WinDroid to start it")
             ask_agent({"boot": True}, ["boot"])
             end = time.monotonic() + 300
             while not (adb.online() and adb.booted()):
                 if time.monotonic() > end:
-                    raise GhostError("Android didn't start within 5 minutes. Ask the user to open Android "
-                                     "Desktop and check what it says.")
+                    raise GhostError("Android didn't start within 5 minutes. Ask the user to open WinDroid "
+                                     "and check what it says.")
                 time.sleep(2)
         if adb.user_locked():
             raise GhostError(LOCKED)

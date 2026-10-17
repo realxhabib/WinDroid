@@ -1,4 +1,4 @@
-"""Draws the Android Desktop icon (assets/icon.png and icon.ico): a green-to-blue rounded square with
+"""Draws the WinDroid icon (assets/icon.png and icon.ico): a green-to-blue rounded square with
 a white app window, the same mark as the launcher's header.
 
     python tools/make_icon.py

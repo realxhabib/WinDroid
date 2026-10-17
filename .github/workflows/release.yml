@@ -1,0 +1,70 @@
+# Builds the WinDroid installer on Windows. A version tag (v1.2.3, the same as __version__ in
+# androiddesktop/__init__.py) publishes it, with its SHA-256, as a GitHub Release: installed copies
+# offer it as an update (androiddesktop/update.py). Run by hand, it builds the installer as an artifact
+# and publishes nothing.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # to create the release
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Check the tag matches the version
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          $version = python -c "import re; print(re.search(r'__version__ = .([\d.]+).', open('androiddesktop/__init__.py').read()).group(1))"
+          if ("v$version" -ne "${{ github.ref_name }}") {
+            throw "The tag ${{ github.ref_name }} doesn't match __version__ in androiddesktop/__init__.py ($version)"
+          }
+
+      - name: Install the build tools
+        shell: pwsh
+        run: |
+          python -m pip install --disable-pip-version-check -r packaging/requirements.txt
+          # Inno Setup, checked against the checksum winget publishes for it
+          $installer = "$env:RUNNER_TEMP\innosetup-6.7.3.exe"
+          Invoke-WebRequest https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe -OutFile $installer
+          if ((Get-FileHash $installer -Algorithm SHA256).Hash -ne "9C73C3BAE7ED48D44112A0F48E66742C00090BDB5BEF71D9D3C056C66E97B732") {
+            throw "The Inno Setup download doesn't match its checksum"
+          }
+          Start-Process $installer -Wait -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=$env:RUNNER_TEMP\InnoSetup"
+          "$env:RUNNER_TEMP\InnoSetup" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      - name: Lint and unit tests
+        run: |
+          python -m pyflakes androiddesktop tools tests packaging/windroid.py
+          python -m unittest
+
+      - name: Build the installer
+        run: python tools/build_installer.py
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WinDroid-Setup
+          path: |
+            dist/WinDroid-Setup-*.exe
+            dist/WinDroid-Setup-*.exe.sha256
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          gh release create "${{ github.ref_name }}" --title "WinDroid $version" --generate-notes `
+            "dist/WinDroid-Setup-$version.exe" "dist/WinDroid-Setup-$version.exe.sha256"

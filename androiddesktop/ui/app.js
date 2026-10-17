@@ -193,7 +193,7 @@ function renderHello() {
   if (!show) return;
   $("hello-title").textContent = h.enrolling ? "Adding a fingerprint" : "Use Windows Hello in Android";
   $("hello-detail").textContent = h.enrolling
-    ? "Follow the steps in Android's Settings: confirm your Android PIN, then Android Desktop touches the fingerprint sensor for you."
+    ? "Follow the steps in Android's Settings: confirm your Android PIN, then WinDroid touches the fingerprint sensor for you."
     : "When an Android app asks for your fingerprint, confirm with Windows Hello instead. Add a fingerprint to Android once to set it up.";
   $("hello-go").textContent = h.enrolling ? "Open Settings" : "Set up fingerprint";
 }
@@ -202,6 +202,36 @@ $("hello-dismiss").addEventListener("click", () => {
   try { localStorage.setItem(helloKey, "1"); } catch {}
   $("hello").hidden = true;
 });
+
+// A newer WinDroid (update.py). "Later" puts the offer away until WinDroid next starts.
+let updateLater = false;
+function renderUpdate() {
+  const u = state.update;
+  const show = !!u && !(u.state === "available" && updateLater);
+  $("update").hidden = !show;
+  if (!show) return;
+  const busy = u.state === "downloading" || u.state === "installing";
+  $("update-title").textContent = {
+    available: `WinDroid ${u.version} is available`,
+    downloading: `Downloading WinDroid ${u.version}...`,
+    installing: `Installing WinDroid ${u.version}`,
+    failed: "The update didn't finish",
+  }[u.state] || "";
+  $("update-detail").textContent = {
+    available: `You have ${u.current}. Updating closes your app windows and shuts Android down; WinDroid starts again by itself when it's done.`,
+    downloading: "Your apps keep running until it's downloaded.",
+    installing: "WinDroid is closing to make way for the new version. It starts again by itself.",
+    failed: u.error,
+  }[u.state] || "";
+  $("update-bar").hidden = u.state !== "downloading";
+  $("update-fill").style.width = `${Math.round((u.progress || 0) * 100)}%`;
+  $("update-actions").hidden = busy;
+  $("update-go").textContent = u.state === "failed" ? "Try again" : "Update";
+  $("update-later").hidden = busy;
+}
+$("update-go").addEventListener("click", () => api().update());
+$("update-notes").addEventListener("click", () => api().update_notes());
+$("update-later").addEventListener("click", () => { updateLater = true; $("update").hidden = true; });
 
 // Called from Python with the latest state.
 window.ui = {
@@ -214,6 +244,7 @@ window.ui = {
     renderNotices();
     renderUnlock();
     renderHello();
+    renderUpdate();
     renderGrid();
   },
   toast,

@@ -47,6 +47,10 @@ class COPYDATASTRUCT(ctypes.Structure):
     _fields_ = [("dwData", ctypes.c_size_t), ("cbData", wt.DWORD), ("lpData", ctypes.c_void_p)]
 
 
+def agent_running() -> bool:
+    return bool(win32gui.FindWindow(AGENT_CLASS, None))
+
+
 def send_to_agent(request: dict) -> bool:
     """From another process: hand a request to the running agent. False if none is running."""
     hwnd = win32gui.FindWindow(AGENT_CLASS, None)
@@ -110,7 +114,7 @@ class WindowManager:
         agent.hInstance = hinst
         agent.lpfnWndProc = self._agent_proc
         win32gui.RegisterClass(agent)
-        self.agent_hwnd = win32gui.CreateWindowEx(0, agent.lpszClassName, "Android Desktop", win32con.WS_POPUP,
+        self.agent_hwnd = win32gui.CreateWindowEx(0, agent.lpszClassName, "WinDroid", win32con.WS_POPUP,
                                                   0, 0, 0, 0, 0, 0, hinst, None)
         if self.ipc:
             self._add_tray()
@@ -167,9 +171,9 @@ class WindowManager:
     def _add_tray(self) -> None:
         icon = winapi.load_icon(APP_ICON, 32) if APP_ICON.exists() else win32gui.LoadIcon(0, win32con.IDI_APPLICATION)
         flags = win32gui.NIF_ICON | win32gui.NIF_MESSAGE | win32gui.NIF_TIP
-        win32gui.Shell_NotifyIcon(win32gui.NIM_ADD, (self.agent_hwnd, 1, flags, WM_APP_TRAY, icon, "Android Desktop"))
+        win32gui.Shell_NotifyIcon(win32gui.NIM_ADD, (self.agent_hwnd, 1, flags, WM_APP_TRAY, icon, "WinDroid"))
 
-    def balloon(self, text: str, title: str = "Android Desktop") -> None:
+    def balloon(self, text: str, title: str = "WinDroid") -> None:
         """A Windows notification from the tray icon, for when the launcher isn't open."""
         if not self.ipc:
             return
@@ -177,7 +181,7 @@ class WindowManager:
         def show() -> None:
             icon = winapi.load_icon(APP_ICON, 32) if APP_ICON.exists() else 0
             win32gui.Shell_NotifyIcon(win32gui.NIM_MODIFY, (self.agent_hwnd, 1, win32gui.NIF_INFO, WM_APP_TRAY,
-                                                            icon, "Android Desktop", text[:255], 10, title[:63],
+                                                            icon, "WinDroid", text[:255], 10, title[:63],
                                                             win32gui.NIIF_INFO))
         self.call(show)
 
@@ -189,7 +193,7 @@ class WindowManager:
 
     def _tray_menu(self) -> None:
         menu = win32gui.CreatePopupMenu()
-        win32gui.AppendMenu(menu, win32con.MF_STRING, TRAY_OPEN, "Open Android Desktop")
+        win32gui.AppendMenu(menu, win32con.MF_STRING, TRAY_OPEN, "Open WinDroid")
         win32gui.AppendMenu(menu, win32con.MF_SEPARATOR, 0, "")
         flags = win32con.MF_STRING | (0 if self.vm.state in (RUNNING, LOCKED) else win32con.MF_GRAYED)
         win32gui.AppendMenu(menu, flags, TRAY_STOP, "Shut down Android")
