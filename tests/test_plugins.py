@@ -146,7 +146,6 @@ class Handle(unittest.TestCase):
         app = self.handle(surface)
         with mock.patch("androiddesktop.plugins.win32gui") as gui, \
                 mock.patch("androiddesktop.plugins.winapi.capture") as printwindow, \
-                mock.patch.object(emuview.link, "touch") as touch, \
                 mock.patch("androiddesktop.plugins.time.sleep"):
             gui.IsWindow.return_value = True
             gui.GetClientRect.return_value = (0, 0, 40, 30)
@@ -155,7 +154,7 @@ class Handle(unittest.TestCase):
             printwindow.assert_not_called()
             self.assertIsInstance(app.keyboard(), _DisplayKeyboard)
             app.click(5, 6)
-        self.assertEqual(touch.call_args_list, [mock.call((1, "t"), 2, 5, 6, True), mock.call((1, "t"), 2, 5, 6, False)])
+        self.assertEqual(surface.touch.call_args_list, [mock.call(5, 6, True), mock.call(5, 6, False)])
 
     def test_in_a_scrcpy_window(self):
         app = self.handle(None)

@@ -225,9 +225,9 @@ class AppHandle:
         surface = self._surface()
         if surface is not None:  # a touch on its display, as the view's own click makes
             surface.wake()
-            emuview.link.touch(surface.point, surface.slot, int(x), int(y), True)
+            surface.touch(int(x), int(y), True)
             time.sleep(0.06)
-            emuview.link.touch(surface.point, surface.slot, int(x), int(y), False)
+            surface.touch(int(x), int(y), False)
             return
         keys.post_click(self.view, int(x), int(y))
 

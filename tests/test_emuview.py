@@ -4,6 +4,7 @@ import socket
 import struct
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -191,6 +192,68 @@ class Sizes(unittest.TestCase):
 
     def test_min_px(self):
         self.assertEqual((emudisplays.min_px(160), emudisplays.min_px(240), emudisplays.min_px(213)), (320, 480, 426))
+
+
+class Touches(unittest.TestCase):
+    """A finger through InputHelper: the emulator's own touchscreens make Android offer handwriting."""
+
+    def test_down_move_up(self):
+        surface = emuview.Surface(mock.Mock(), (1, ""), 1)
+        surface.display = 12
+        with mock.patch.object(emuview.link, "helper") as helper:
+            surface.touch(5, 6, False)  # a lift without a touch: nothing
+            surface.touch(5, 6, True)
+            surface.touch(7, 8, True)
+            surface.touch(9, 10, False)
+            surface.touch(9, 10, False)
+        self.assertEqual([c.args[0] for c in helper.call_args_list],
+                         ["touch 12 0 5 6", "touch 12 2 7 8", "touch 12 1 9 10"])
+
+
+class Polling(unittest.TestCase):
+    """A stream that brings nothing new is checked with getScreenshot, and started again if it missed a frame."""
+
+    def surface(self, live: bool, stale_for: float) -> emuview.Surface:
+        surface = emuview.Surface(mock.Mock(), (1, ""), 1)
+        if live:
+            surface._stream_token = object()
+        surface._last_change = time.monotonic() - stale_for
+        surface._connect = mock.Mock()
+        surface._connect.return_value.unary.return_value = emugrpc.unpb(emugrpc.pb((1, emugrpc.pb((3, 396), (4, 822)))))
+        surface._go_live, surface._go_idle = mock.Mock(), mock.Mock()
+        return surface
+
+    def poll(self, surface: emuview.Surface, new_frame: bool) -> bool:
+        with mock.patch.object(emuview.win32gui, "IsIconic", return_value=False), \
+                mock.patch.object(surface, "_take", return_value=new_frame) as take:
+            ok = surface._poll_once()
+        self.took = take.call_args_list
+        return ok
+
+    def test_a_stream_bringing_frames_isnt_polled(self):
+        surface = self.surface(live=True, stale_for=0.1)
+        self.assertTrue(self.poll(surface, True))
+        surface._connect.assert_not_called()
+        self.assertEqual(self.took, [])
+
+    def test_a_stale_stream_that_missed_a_frame_starts_again(self):
+        surface = self.surface(live=True, stale_for=emuview.LIVE_SECS + 1)
+        self.assertTrue(self.poll(surface, True))
+        self.assertEqual(self.took, [mock.call(396, 822)])
+        surface._go_idle.assert_called_once_with()
+        surface._go_live.assert_called_once_with()
+
+    def test_a_stale_stream_with_nothing_new_is_left_alone(self):
+        surface = self.surface(live=True, stale_for=emuview.LIVE_SECS + 1)
+        self.poll(surface, False)
+        surface._go_idle.assert_not_called()
+        surface._go_live.assert_not_called()
+
+    def test_idle_polls_and_goes_live_on_a_new_frame(self):
+        surface = self.surface(live=False, stale_for=0)
+        self.poll(surface, True)
+        surface._go_idle.assert_not_called()
+        surface._go_live.assert_called_once_with()
 
 
 class Slots(unittest.TestCase):

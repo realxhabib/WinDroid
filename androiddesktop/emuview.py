@@ -7,9 +7,10 @@ which it composes on the PC's GPU anyway. Their frames come straight from the em
 (emugrpc.py: streamScreenshot, written into shared memory) and go onto the window with Direct3D
 (d3d.py), 1:1. Nothing is encoded or decoded.
 
-Touches go to the emulator's touchscreen for that display (gRPC). Keys, text and the mouse wheel go to
-InputHelper (helper/src/InputHelper.java), which injects them with the display's id: the emulator has
-just one keyboard, which Android would send to whichever display has focus.
+Touches, keys, text and the mouse wheel go to InputHelper (helper/src/InputHelper.java), which injects
+them with the display's id: the emulator has just one keyboard, which Android would send to whichever
+display has focus, and its touchscreens say they're styluses as well, so Android would offer
+handwriting ("Try out your stylus") in place of the keyboard after a touch from one.
 
 The emulator's displays are secure, so FLAG_SECURE screens (Play's purchase sheet, PIN pads) show and
 take input as they are: protected.py is for scrcpy windows only.
@@ -17,7 +18,9 @@ take input as they are: protected.py is for scrcpy windows only.
 The emulator wakes every screenshot stream whenever any of its displays draws, and reads each one's
 display back from the GPU, changed or not: with a few windows open, a scrolling one would slow down
 for all the others. So only the window in use, and windows whose app is drawing something new, stream;
-the others look for something new a few times a second instead (Surface.wake, _poll).
+the others look for something new a few times a second instead (Surface.wake, _poll). So does a
+stream that has brought nothing new for a while: one to a display the emulator has only just made can
+keep sending its first (blank) frame, and is started again once a screenshot shows it missed something.
 
 This needs an emulator started with -grpc and with its (hidden) Qt window, as vm.py starts it: a
 windowless emulator streams its extra displays at the main display's size. Without one, with every
@@ -64,7 +67,8 @@ FLAGS = (PUBLIC | SECURE | OWN_CONTENT_ONLY | SUPPORTS_TOUCH | DESTROY_CONTENT_O
          OWN_DISPLAY_GROUP | ALWAYS_UNLOCKED | TOUCH_FEEDBACK_DISABLED | OWN_FOCUS)
 KEEP_FREE = 1  # display slots left for protected screens of scrcpy windows
 DEVICE_INPUT_JAR = "/data/local/tmp/androiddesktop-input.jar"  # its own copy: another checkout may push appcatalog.jar
-INPUT_VERSION = 3
+INPUT_VERSION = 4
+TOUCH_DOWN, TOUCH_UP, TOUCH_MOVE = 0, 1, 2  # MotionEvent.ACTION_*
 VIEW_CLASS = "AndroidDesktop.EmuView"
 FIRST_FRAME_SECS = 8
 RESIZE_DEBOUNCE_MS = 60
@@ -175,7 +179,6 @@ class Link:
         self._grpc_lock = threading.Lock()
         self._helper_lock = threading.Lock()
         self._channel: emugrpc.Channel | None = None
-        self._touches: emugrpc.Call | None = None
         self._helper: subprocess.Popen | None = None
 
     def usable(self) -> tuple[int, str] | None:
@@ -193,31 +196,15 @@ class Link:
         log(f"emulator displays: not used until Android restarts: {reason}")
         self._disabled_for, self.disabled = point, reason
 
-    # ------------------------------------------------------------------ touches, clipboard (gRPC)
+    # ------------------------------------------------------------------ clipboard (gRPC)
     def _control(self, point: tuple[int, str]) -> emugrpc.Channel:
         """The connection for input, to this emulator (a restarted one has a new token). Hold _grpc_lock."""
         channel = self._channel
         if channel is None or channel.closed.is_set() or (channel.port, channel.token) != point:
             if channel:
                 channel.close()
-            self._channel, self._touches = emugrpc.Channel(*point), None
+            self._channel = emugrpc.Channel(*point)
         return self._channel
-
-    def touch(self, point: tuple[int, str], slot: int, x: int, y: int, down: bool) -> None:
-        event = emugrpc.touch_event(slot, emugrpc.touch(x, y, 0, 1 if down else 0))
-        for attempt in range(2):
-            try:
-                with self._grpc_lock:
-                    channel = self._control(point)
-                    if self._touches is None or self._touches.done.is_set():
-                        self._touches = channel.call("streamInputEvent")
-                    self._touches.send(event)
-                return
-            except (OSError, emugrpc.GrpcError) as e:
-                with self._grpc_lock:
-                    self._touches = None
-                if attempt:
-                    log(f"emulator displays: touch: {e!r}")
 
     def set_clipboard(self, point: tuple[int, str], text: str) -> None:
         try:
@@ -227,7 +214,11 @@ class Link:
         except (OSError, emugrpc.GrpcError) as e:
             log(f"emulator displays: clipboard: {e!r}")
 
-    # ------------------------------------------------------------------ keys, text, wheel (InputHelper)
+    # ------------------------------------------------------------------ touches, keys, text, wheel (InputHelper)
+    def touch(self, display: int, action: int, x: int, y: int) -> None:
+        """One finger on the display: TOUCH_DOWN, TOUCH_MOVE while it's down, TOUCH_UP."""
+        self.helper(f"touch {display} {action} {x} {y}")
+
     def helper(self, line: str) -> None:
         with self._helper_lock:
             for attempt in range(2):
@@ -274,7 +265,7 @@ class Link:
         with self._grpc_lock:
             if self._channel:
                 self._channel.close()
-            self._channel = self._touches = None
+            self._channel = None
         self._disabled_for, self.disabled = None, ""
 
 
@@ -344,6 +335,7 @@ class Surface:
         self._want: tuple[tuple[int, int], int] | None = None
         self._resizing = False
         self._down = False
+        self._touching = False  # Android has our finger down
         self._last = (0, 0)
         self._hovering = False
         self._hovered = 0.0
@@ -493,22 +485,36 @@ class Surface:
 
     def _poll(self) -> None:
         """Thread: while not streaming, look for a new frame a few times a second."""
-        request = emugrpc.image_format(self.slot, emugrpc.RGBA8888, handle=self._handle)
         while not self.closed:
             time.sleep(POLL_SECS)
-            if self.live or self.closed or win32gui.IsIconic(self.win.hwnd):
-                continue
-            try:
-                reply = self._connect().unary("getScreenshot", request, timeout=5)
-            except (OSError, emugrpc.GrpcError) as e:
-                if not self.closed and not self._display_exists():
-                    log(f"{self.win.app.package}: emulator display {self.slot} lost: {e}")
-                    self.win.surface_lost(self)
-                    return
-                continue
-            fmt = emugrpc.unpb(emugrpc.first(reply, 1, b""))
-            if self._take(emugrpc.first(fmt, 3), emugrpc.first(fmt, 4)):
-                self._go_live()
+            if not self._poll_once():
+                return
+
+    def _stale(self) -> bool:
+        """The stream has brought nothing new for a while. The app may just not be drawing, but a stream
+        to a display the emulator has only just made can keep sending the first (blank) frame for good."""
+        return time.monotonic() - self._last_change > LIVE_SECS
+
+    def _poll_once(self) -> bool:
+        """Look for a new frame, unless the stream brings them. False once the display is gone."""
+        if self.closed or win32gui.IsIconic(self.win.hwnd) or (self.live and not self._stale()):
+            return True
+        request = emugrpc.image_format(self.slot, emugrpc.RGBA8888, handle=self._handle)
+        try:
+            reply = self._connect().unary("getScreenshot", request, timeout=5)
+        except (OSError, emugrpc.GrpcError) as e:
+            if not self.closed and not self._display_exists():
+                log(f"{self.win.app.package}: emulator display {self.slot} lost: {e}")
+                self.win.surface_lost(self)
+                return False
+            return True
+        fmt = emugrpc.unpb(emugrpc.first(reply, 1, b""))
+        if self._take(emugrpc.first(fmt, 3), emugrpc.first(fmt, 4)):
+            if self.live:  # the stream missed it: a new one brings the frames
+                log(f"{self.win.app.package}: the frames stream fell behind; streaming again")
+                self._go_idle()
+            self._go_live()
+        return True
 
     def _display_exists(self) -> bool:
         try:
@@ -620,9 +626,17 @@ class Surface:
         w, h = self.frame if self.frame[0] else self.size
         return min(max(x, 0), w - 1), min(max(y, 0), h - 1)
 
-    def _touch(self, x: int, y: int, down: bool) -> None:
+    def touch(self, x: int, y: int, down: bool) -> None:
+        """The finger at (x, y): down (pressing, or moving while pressed) or lifted there."""
         self._last = (x, y)
-        link.touch(self.point, self.slot, x, y, down)
+        if down:
+            action = TOUCH_MOVE if self._touching else TOUCH_DOWN
+        elif self._touching:
+            action = TOUCH_UP
+        else:
+            return
+        self._touching = down
+        link.touch(self.display, action, x, y)
 
     def _hover(self, x: int, y: int) -> None:
         """The mouse moved over the view without a button down: Android shows hover states, as with scrcpy."""
@@ -727,11 +741,11 @@ class Surface:
             win32gui.SetFocus(hwnd)
             win32gui.SetCapture(hwnd)
             self._down = True
-            self._touch(*self._point(lp), True)
+            self.touch(*self._point(lp), True)
             return 0
         if msg == win32con.WM_MOUSEMOVE:
             if self._down:
-                self._touch(*self._point(lp), True)
+                self.touch(*self._point(lp), True)
             else:
                 self._hover(*self._point(lp))
             return 0
@@ -744,12 +758,12 @@ class Surface:
             if self._down:
                 self._down = False
                 win32gui.ReleaseCapture()
-                self._touch(*self._point(lp), False)
+                self.touch(*self._point(lp), False)
             return 0
         if msg == win32con.WM_CAPTURECHANGED:
             if self._down:
                 self._down = False
-                self._touch(*self._last, False)
+                self.touch(*self._last, False)
             return 0
         if msg in (win32con.WM_RBUTTONDOWN, win32con.WM_MBUTTONDOWN, win32con.WM_MBUTTONUP):
             win32gui.SetFocus(hwnd)

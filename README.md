@@ -393,9 +393,13 @@ Launcher (WebView2)      App window (Win32, frameless)            App window (8t
     140%), at a steady 59 fps instead of 35, and input reaches the screen a frame sooner. The emulator
     wakes every stream whenever any display draws, so only the window in use and windows whose app is
     drawing stream; the others look for a change three times a second, and minimized ones not at all.
-    The left mouse button is a finger on that display's touchscreen (gRPC); keys, typed text, the
-    wheel and the pointer's hover go through `helper/src/InputHelper.java`, which injects them with
-    the display's id, as `input -d` does without a process per key. These displays are secure, so `FLAG_SECURE` screens
+    A stream that brings nothing new is checked the same way: one to a display the emulator has only
+    just made can keep sending its first, blank frame, and is started again when a screenshot shows
+    it fell behind. The left mouse button (a finger), keys, typed text, the wheel and the pointer's
+    hover all go through `helper/src/InputHelper.java`, which injects them with the display's id, as
+    `input -d` does without a process per event. Not the emulator's own touchscreens: they tell
+    Android they're styluses too, and Android then offers handwriting ("Try out your stylus") in
+    place of the keyboard. These displays are secure, so `FLAG_SECURE` screens
     (Play's purchase sheet, PIN pads) work in them at full speed. They don't rotate with their app: an
     app that wants another orientation shows upright, letterboxed, until the window is shaped to suit.
     A windowless emulator streams extra displays at the wrong size, which is why the emulator keeps
