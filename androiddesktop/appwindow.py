@@ -14,6 +14,10 @@ display, video-encoded inside Android and shown by a scrcpy window re-parented a
 If the app's display goes away without being asked to (scrcpy crashed, or Android itself did), the
 window doesn't vanish: it shows "Reconnecting..." and starts the app again on a fresh display, booting
 Android again if needed. If that keeps failing it says so and offers "Try again".
+
+The phone button sends the app to a paired iPhone or iPad (remote/hub.py). While it's there the window
+lets go of its own display (scrcpy's, or its emulator display) and shows "On iPhone" with Bring back,
+which opens the app in the window again and pulls it home.
 """
 from __future__ import annotations
 
@@ -42,6 +46,7 @@ from .runtime import SCRCPY_EXE
 if TYPE_CHECKING:
     from .manager import WindowManager
     from .protected import Protected
+    from .remote.hub import Link
 
 WM_APP_EMBED = win32con.WM_APP + 1  # lparam: the window showing the app (scrcpy's, or emuview's)
 WM_APP_EXITED = win32con.WM_APP + 2
@@ -54,6 +59,7 @@ HTMAXBUTTON = 9
 TIMER_SAMPLE, TIMER_SPLASH, TIMER_FADE, TIMER_KILL, TIMER_RETRY = 1, 2, 3, 4, 5
 
 STARTING, RUNNING, RECONNECTING, FAILED = "starting", "running", "reconnecting", "failed"
+REMOTE = "remote"  # the app is on an iPhone or iPad: no scrcpy of our own
 RETRY_DELAYS = (1, 2, 4, 8, 15)  # seconds before each reconnect attempt
 STABLE_SECS = 30  # a connection that lasted this long starts the attempt count afresh
 
@@ -66,7 +72,10 @@ MIN_SIZE_DIP = (280, 220)
 
 GLYPHS = {"back": "", "pin": "", "pinned": "", "min": "", "max": "",
           "restore": "", "close": ""}
-TOOLTIPS = {"back": "Back", "pin": "Keep on top", "min": "Minimize", "max": "Maximize", "close": "Close"}
+GLYPHS["send"] = ""  # CellPhone
+TOOLTIPS = {"back": "Back", "pin": "Keep on top", "min": "Minimize", "max": "Maximize", "close": "Close",
+            "send": "Send to iPhone or iPad"}
+TIMER_HAND_OFF = 6  # scrcpy got its WM_CLOSE when the app moved to a phone; kill it if it lingers
 CLOSE_RED = (196, 43, 28)
 _LAUNCH_LOCK = threading.Lock()
 
@@ -148,6 +157,7 @@ class AppWindow:
         self.error = ""
         self.protected: Protected | None = None  # a FLAG_SECURE screen, shown via protected.py
         self.surface: emuview.Surface | None = None  # the app on an emulator display, instead of scrcpy
+        self.remote: Link | None = None  # the app is on an iPhone or iPad (remote/hub.py)
         self._gen = 0  # one per scrcpy launch; messages from an older launch are ignored
         self._shown = 0  # the launch whose window is embedded
         self._handled = 0  # the last launch whose end we've dealt with
@@ -173,7 +183,10 @@ class AppWindow:
         cap, small = round(CAPTION_BTN_DIP * s), round(SMALL_BTN_DIP * s)
         out = [("back", 0, small)]
         x = width
-        for name, w in (("close", cap), ("max", cap), ("min", cap), ("pin", small)):
+        right = [("close", cap), ("max", cap), ("min", cap), ("pin", small)]
+        if self.manager.remote is not None:  # iPhone & iPad is available
+            right.append(("send", small))
+        for name, w in right:
             out.append((name, x - w, x))
             x -= w
         return out
@@ -503,11 +516,14 @@ class AppWindow:
         if self.intent:
             self.run_intent(self.intent)
             self.intent = None
-        if self.adopting is not None:
-            self.adopt(self.adopting)
+        adopted = self.adopting
+        if adopted is not None:
+            self.adopt(adopted)
         if win32gui.GetForegroundWindow() == self.hwnd:
             win32gui.SetFocus(child)
         win32gui.InvalidateRect(self.hwnd, None, False)
+        if self.manager.remote:
+            self.manager.remote.window_embedded(self, adopted)
         self.manager.changed()
 
     def run_intent(self, intent: list[str]) -> None:
@@ -526,6 +542,66 @@ class AppWindow:
         self.adopting = None
         threading.Thread(target=self._take_tasks, args=(display, self.display_id), daemon=True,
                          name=f"adopt-{self.app.package}").start()
+
+    def go_remote(self, link: Link) -> None:
+        """The app is on a phone or tablet now (the hub moved its task to a display of its own): stop our
+        scrcpy, whose display is empty, and show where the app went."""
+        if self.closing:
+            return
+        self.remote = link
+        if self.status != REMOTE:
+            self._handled = self._gen  # scrcpy's exit is on purpose, not a crash to recover from
+            if self.protected:
+                self.protected.end()
+            self._drop_surface()  # on an emulator display: it's empty now the app has moved
+            child, self.child = self.child, 0
+            if child and win32gui.IsWindow(child):
+                win32gui.ShowWindow(child, win32con.SW_HIDE)
+                win32gui.PostMessage(child, win32con.WM_CLOSE, 0, 0)
+                winapi.user32.SetTimer(self.hwnd, TIMER_HAND_OFF, 3000, None)
+            self.status = REMOTE
+            self.error = ""
+            log(f"{self.app.package}: on {link.hub.group_name(link.group)} (display {link.display})")
+        self.display_id = link.display  # Back in the bar goes where the app is
+        winapi.user32.SetTimer(self.hwnd, TIMER_SPLASH, 1000, None)  # "waiting for" turns into "is on"
+        win32gui.InvalidateRect(self.hwnd, None, False)
+        self.manager.changed()
+
+    def come_back(self, display: int | None) -> None:
+        """Bring back: scrcpy on a fresh display again; its launch of the app pulls the task over from the
+        phone's display, and adopt() moves anything left behind."""
+        if self.closing or self.status != REMOTE:
+            return
+        self.remote = None
+        self.status = RECONNECTING
+        self.adopting, self.display_id = display, None
+        self._attempt = 0
+        winapi.user32.SetTimer(self.hwnd, TIMER_SPLASH, 33, None)
+        win32gui.InvalidateRect(self.hwnd, None, False)
+        self._start()
+
+    def _shared(self) -> bool:
+        hub = self.manager.remote
+        return bool(hub and hub.link_for(self.app.package))
+
+    def _send_menu(self) -> None:
+        """The phone button: send the app to a paired device (or share it), bring it back, or pair one."""
+        hub = self.manager.remote
+        if hub is None:
+            return
+        choices = hub.choices(self.app.package)
+        menu = win32gui.CreatePopupMenu()
+        for i, (action, label) in enumerate(choices):
+            if action == "pair" and i:
+                win32gui.AppendMenu(menu, win32con.MF_SEPARATOR, 0, "")
+            win32gui.AppendMenu(menu, win32con.MF_STRING, 100 + i, label)
+        x0 = next(x for name, x, _ in self._buttons(self._client()[0]) if name == "send")
+        x, y = win32gui.ClientToScreen(self.hwnd, (x0, self.bar))
+        cmd = win32gui.TrackPopupMenu(menu, win32con.TPM_RETURNCMD | win32con.TPM_LEFTALIGN | win32con.TPM_TOPALIGN,
+                                      x, y, 0, self.hwnd, None)
+        win32gui.DestroyMenu(menu)
+        if cmd and 0 <= cmd - 100 < len(choices):
+            hub.window_choice(self, choices[cmd - 100][0])
 
     def _take_tasks(self, source: int, target: int) -> None:
         from .protected import parse_root_tasks, reset_secure_state_soon  # protected.py imports this module
@@ -623,6 +699,8 @@ class AppWindow:
                 d.rectangle((x0, 0, x1, h), fill=mix(bg, fg, 0.15 if down else 0.09))
             if name == "back" and self.display_id is None:
                 color = mix(bg, fg, 0.25)
+            if name == "send" and (self.remote is not None or self._shared()):  # lit while on a device
+                color = (96, 160, 255) if luminance(bg) < 0.5 else (0, 95, 204)
             glyph = GLYPHS["restore" if name == "max" and maximized else
                            "pinned" if name == "pin" and self.pinned else name]
             d.text(((x0 + x1) / 2, h / 2), glyph, font=glyph_font, fill=color, anchor="mm")
@@ -664,14 +742,19 @@ class AppWindow:
         d = ImageDraw.Draw(im)
         text_font = winapi.font("text", max(9, round(13 * s)))
         button = None  # (action, label)
-        if self.status == FAILED:
+        if self.status == REMOTE and self.remote is not None:
+            where = self.remote.hub.group_name(self.remote.group)
+            message = (f"{self.app.label} is on your {where}." if self.remote.clients else
+                       f"{self.app.label} is waiting for your {where}: open WinDroid there.")
+            button = ("bringback", "Bring back")
+        elif self.status == FAILED:
             message, button = self.error, ("retry", "Try again")
         elif self.manager.vm.state == "locked":
             message, button = f"Android is locked. Unlock it to open {self.app.label}.", ("unlock", "Unlock")
         elif self.manager.vm.state != "running":
             message = self.manager.vm.detail or "Starting Android..."
         elif self.status == RECONNECTING:
-            message = "Reconnecting..."
+            message = f"Bringing {self.app.label} back..." if self.adopting is not None else "Reconnecting..."
         else:
             message = f"Opening {self.app.label}..."
         ty = cy + size // 2 + round(30 * s)
@@ -733,11 +816,15 @@ class AppWindow:
             self.retry()
         elif name == "unlock":
             self.manager.on_unlock(self)
+        elif name == "send":
+            self._send_menu()
+        elif name == "bringback" and self.manager.remote:
+            self.manager.remote.bring_back(self.app.package)
         self._repaint_bar()
 
     def _set_hover(self, name: str | None) -> None:
         if name != self.hover:
-            if {"retry", "unlock"} & {name, self.hover}:
+            if {"retry", "unlock", "bringback"} & {name, self.hover}:
                 win32gui.InvalidateRect(self.hwnd, None, False)
             self.hover = name
             self._repaint_bar()
@@ -850,6 +937,10 @@ class AppWindow:
                 if self.proc and self.proc.poll() is None:
                     self.proc.kill()
                 win32gui.DestroyWindow(hwnd)
+            elif wp == TIMER_HAND_OFF:
+                winapi.user32.KillTimer(hwnd, TIMER_HAND_OFF)
+                if self.status == REMOTE and self.proc and self.proc.poll() is None:
+                    self.proc.kill()
             return 0
         if msg == win32con.WM_GETMINMAXINFO:
             info = ctypes.cast(lp, ctypes.POINTER(winapi.MINMAXINFO)).contents
@@ -891,13 +982,15 @@ class AppWindow:
             win32gui.DestroyWindow(hwnd)
             return 0
         if msg == win32con.WM_DESTROY:
-            for t in (TIMER_SAMPLE, TIMER_SPLASH, TIMER_FADE, TIMER_KILL, TIMER_RETRY):
+            for t in (TIMER_SAMPLE, TIMER_SPLASH, TIMER_FADE, TIMER_KILL, TIMER_RETRY, TIMER_HAND_OFF):
                 winapi.user32.KillTimer(hwnd, t)
             if self.protected:
                 self.protected.end(remove=True)
             if self.proc and self.proc.poll() is None:
                 self.proc.kill()
             self._drop_surface()
+            if self.manager.remote:
+                self.manager.remote.window_closed(self)  # an app on a phone stays there
             self.manager.closed(self)
             return 0
         return win32gui.DefWindowProc(hwnd, msg, wp, lp)

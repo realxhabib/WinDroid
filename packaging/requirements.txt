@@ -1,6 +1,8 @@
 # What the installed WinDroid is built with (tools/build_installer.py; .github/workflows/release.yml).
 # Pinned, so a release is built from exactly what was tested.
 pillow==12.3.0
+cryptography==50.0.2
+segno==1.6.6
 pywin32==312
 pywebview==6.2.1
 bottle==0.13.4

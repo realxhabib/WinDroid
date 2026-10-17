@@ -343,3 +343,34 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: def
   background: color-mix(in srgb, var(--bg) 70%, transparent); border: 1px solid var(--stroke-2);
   box-shadow: var(--shadow); backdrop-filter: blur(24px); animation: pop .2s ease-out;
 }
+
+/* iPhone & iPad */
+.remote { flex: 1; min-height: 0; display: flex; flex-direction: column; padding: 4px 18px 0; }
+.remote-head { display: flex; align-items: center; gap: 8px; margin: 2px 0 10px; }
+.remote-head h2 { margin: 0; font-size: 18px; font-weight: 600; }
+.remote-body { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 16px; }
+.remote-body > div > p { color: var(--text-2); margin: 4px 2px 14px; }
+.remote .facts { margin: 0 0 18px; }
+.glyph.inline { font-size: 12px; vertical-align: -1px; }
+.pair-box { display: flex; gap: 16px; align-items: center; padding: 14px; margin-bottom: 12px; border-radius: var(--radius);
+  background: var(--glass); border: 1px solid var(--stroke); }
+.pair-box img { width: 168px; height: 168px; border-radius: 10px; background: #fff; flex: none; image-rendering: pixelated; }
+.pair-box b { display: block; font-size: 14px; }
+.pair-box p { color: var(--text-2); margin: 6px 0 10px; }
+.pair-box code { font-size: 11px; color: var(--text-3); word-break: break-all; }
+#remote-pair { margin: 2px 0 6px; }
+.devices { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.devices .none { color: var(--text-3); margin: 2px; }
+.device { display: flex; align-items: center; gap: 12px; padding: 10px 6px 10px 12px; border-radius: 12px;
+  background: var(--glass); border: 1px solid var(--stroke); }
+.device > .glyph { font-size: 18px; color: var(--text-2); }
+.device.online > .glyph { color: var(--accent); }
+.device div { flex: 1; min-width: 0; }
+.device b { display: block; font-weight: 600; }
+.device p { margin: 1px 0 0; color: var(--text-2); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.remote .fine { color: var(--text-3); font-size: 11px; margin: 4px 2px 10px; }
+.notice.ask .sas { font: 600 26px/1.2 "Cascadia Mono", Consolas, monospace; letter-spacing: 4px; margin: 2px 0 8px; }
+#home-asks .notice, #remote-asks .notice { margin-bottom: 10px; }
+.tile.away img { opacity: .45; }
+.tile.away::after { content: "\E8EA"; font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets"; position: absolute;
+  top: 8px; right: 10px; font-size: 12px; color: var(--blue); }

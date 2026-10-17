@@ -36,8 +36,11 @@ def version_info(exe: str, description: str) -> VSVersionInfo:
 a = Analysis(
     [str(Path(SPECPATH) / "windroid.py")],
     pathex=[str(ROOT)],
-    # The package finds these next to its modules (Path(__file__).with_name(...)), so they go there.
-    datas=[(str(PACKAGE / "assets"), "androiddesktop/assets"), (str(PACKAGE / "ui"), "androiddesktop/ui")],
+    # The package finds these next to its modules (Path(__file__).with_name(...)), so they go there:
+    # assets/, ui/, remote/web/, plugins' own pages... every file in it that isn't Python.
+    datas=[(str(f), str(Path("androiddesktop") / f.parent.relative_to(PACKAGE)))
+           for f in PACKAGE.rglob("*")
+           if f.is_file() and f.suffix not in (".py", ".pyc") and "__pycache__" not in f.parts],
     # Some of ours are imported only when a command needs them; pywintypes imports win32timezone itself,
     # whenever it hands back a time (a shortcut's GetPath does).
     hiddenimports=collect_submodules("androiddesktop") + ["win32timezone"],

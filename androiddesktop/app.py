@@ -160,6 +160,36 @@ class Api:
         if release and release.page.startswith(f"https://github.com/{update.REPO}/"):
             os.startfile(release.page)
 
+    # iPhone & iPad (remote/)
+    def remote_enable(self, on: bool) -> None:
+        self._agent.remote_enable(bool(on))
+
+    def remote_firewall(self) -> bool:
+        return self._agent.remote_firewall()
+
+    def remote_pair(self) -> dict:
+        return self._agent.remote_pair()
+
+    def remote_pair_done(self) -> None:
+        if self._agent.remote:
+            self._agent.remote.end_pairing()
+
+    def remote_approve(self, pid: str, allow: bool) -> None:
+        if self._agent.remote:
+            self._agent.remote.pairing.approve(pid, bool(allow))
+
+    def remote_remove(self, group: str) -> None:
+        if self._agent.remote and self._agent.remote.pairing.remove(group):
+            self._agent.toast("Device removed. It needs to pair again to use your apps.")
+
+    def remote_send(self, package: str, group: str, mode: str = "move") -> None:
+        if self._agent.remote and mode in ("move", "share"):
+            self._agent.remote.send(package, group, mode)
+
+    def remote_back(self, package: str) -> None:
+        if self._agent.remote:
+            self._agent.remote.bring_back(package)
+
 
 class Agent:
     def __init__(self, show_launcher: bool) -> None:
@@ -170,6 +200,15 @@ class Agent:
         self.fingerprint = biometrics.Bridge(self.manager, self._label, self._hello_anchor)
         self.updater = update.Updater(winapi.FROZEN, on_change=lambda: self.push(apps=False),
                                       on_ready=lambda: threading.Thread(target=self.quit, daemon=True).start())
+        self.remote = None  # apps on iPhones and iPads (remote/hub.py)
+        self.remote_error = ""
+        try:
+            from .remote.hub import Hub
+            self.remote = Hub(self.manager, self.catalog.sorted, self.notice)
+            self.manager.remote = self.remote
+        except ImportError as e:  # an install from before remote/ (pip install -e . brings what it needs)
+            self.remote_error = f"Missing a package: {e.name}. Run: pip install -e ."
+            log(f"remote: unavailable: {e!r}")
         self._hello_unlocking = threading.Lock()
         self.window: webview.Window | None = None
         self.loaded = False
@@ -196,6 +235,11 @@ class Agent:
         self.fingerprint.on_notice = self.notice
         self.fingerprint.start()
         self.vm.listeners.append(lambda s, d: self._on_vm(s))
+        if self.remote:
+            self.remote.listeners.append(lambda: self.push(apps=True))
+            self.remote.pairing.listeners.append(self._remote_asks)
+            if self.remote.enabled:
+                self.remote.start()
         self.catalog.listeners.append(lambda: self.push(apps=True))
         self.manager.listeners.append(lambda: self.push(apps=True))
         self.window = webview.create_window(
@@ -266,6 +310,8 @@ class Agent:
             threading.Thread(target=self.vm.ensure_running, kwargs={"wait_for_unlock": False}, daemon=True).start()
         if request.get("show"):
             self.show_launcher()
+            if request.get("remote") and self.window and self.loaded:
+                self.window.evaluate_js("window.ui && ui.openRemote()")
         if request.get("stop"):
             self.shutdown()
         if request.get("quit"):
@@ -370,6 +416,34 @@ class Agent:
         self.fingerprint.enroll()
         self.open("com.android.settings", ["-a", "android.settings.FINGERPRINT_ENROLL"])
 
+    # ------------------------------------------------------------------ iPhone & iPad
+    def remote_enable(self, on: bool) -> None:
+        if self.remote:
+            self.remote.enable(on)
+            log(f"remote: {'on' if on else 'off'}")
+
+    def remote_firewall(self) -> bool:
+        """The "Allow" button: Windows asks for administrator rights to add our one firewall rule."""
+        return bool(self.remote and self.remote.allow_firewall())
+
+    def remote_pair(self) -> dict:
+        """A fresh QR code for the launcher: the server's address and a one-time token."""
+        if not self.remote:
+            return {"error": self.remote_error}
+        url = self.remote.pair_url()
+        if not url:
+            return {"error": self.remote.problem or "Not ready yet: give it a moment."}
+        import segno
+        return {"url": url, "qr": segno.make(url, error="m").svg_data_uri(scale=5, border=2),
+                "expires": 300}
+
+    def _remote_asks(self) -> None:
+        """A device asks to be allowed in (approval pairing): say so even if the launcher is closed."""
+        asks = self.remote.pairing.approvals() if self.remote else []
+        if asks and not (self.visible and self.loaded):
+            self.manager.balloon(f"{asks[0]['name']} wants to use your Android apps. Open WinDroid to allow it.",
+                                 "iPhone or iPad")
+
     def power(self) -> None:
         if self.vm.state in (RUNNING, LOCKED):
             self.shutdown()
@@ -431,7 +505,8 @@ class Agent:
                      "theme": "light" if winapi.light_theme() else "dark", "update": self.updater.snapshot(),
                      "checks": [asdict(c) for c in self.checks if c.level != checks.OK],
                      "hello": {"available": self.fingerprint.available, "enrolled": self.fingerprint.enrolled,
-                               "enrolling": self.fingerprint.enrolling, "remembered": hello.has_pin()}}
+                               "enrolling": self.fingerprint.enrolling, "remembered": hello.has_pin()},
+               "remote": self.remote.snapshot() if self.remote else {"error": self.remote_error}}
         if apps:
             running = set(self.manager.running())
             out["apps"] = [{"pkg": a.package, "label": a.label, "system": a.system, "icon": self._icon_uri(a.icon),
@@ -619,7 +694,8 @@ class Agent:
             if time.monotonic() - last_update_check > 3600:  # it asks GitHub once a day at most
                 last_update_check = time.monotonic()
                 self.updater.check()
-            busy = bool(self.manager.windows) or self.visible or self.updater.status == update.DOWNLOADING
+            busy = (bool(self.manager.windows) or self.visible or self.updater.status == update.DOWNLOADING
+                    or bool(self.remote and self.remote.busy()))
             if busy:
                 self._idle_since = time.monotonic()
             if self.vm.state == RUNNING and time.monotonic() - last_refresh > 45:

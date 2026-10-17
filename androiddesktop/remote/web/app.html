@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="wd-config" content="{{CONFIG}}">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="{{TITLE}}">
+<meta name="theme-color" content="#000000">
+<meta name="format-detection" content="telephone=no">
+<title>{{TITLE}}</title>
+<link rel="apple-touch-icon" href="{{BASE}}icon.png">
+<link rel="icon" href="{{BASE}}icon.png">
+<link rel="manifest" href="{{BASE}}manifest.webmanifest">
+<link rel="stylesheet" href="/s/style.css">
+</head>
+<body>
+<div id="insets" aria-hidden="true"></div>
+
+<!-- Not paired yet -->
+<section class="screen center" id="pair" hidden>
+  <div class="card">
+    <div class="logo" aria-hidden="true"></div>
+    <h1>Pair with your PC</h1>
+    <p id="pair-text">In WinDroid on your PC, open <b>iPhone &amp; iPad</b> and scan its QR code with this device's Camera.</p>
+    <button class="primary" id="pair-ask">Ask the PC to allow this device</button>
+    <div class="code" id="pair-code" hidden>
+      <p>On your PC, click <b>Allow</b> if WinDroid shows this code:</p>
+      <div class="digits" id="pair-digits"></div>
+    </div>
+    <p class="error" id="pair-error" hidden></p>
+  </div>
+</section>
+
+<!-- Waiting for the PC -->
+<section class="screen center" id="wait" hidden>
+  <div class="spinner" aria-hidden="true"></div>
+  <p id="wait-text">Connecting...</p>
+</section>
+
+<!-- All apps -->
+<section class="screen" id="lobby" hidden>
+  <header class="lobby-head">
+    <div><h1>Android apps</h1><p id="lobby-pc"></p></div>
+    <button class="round" id="lobby-menu" aria-label="More">&#x22EF;</button>
+  </header>
+  <div class="banner" id="trust-banner" hidden>
+    <span>For smoother video, trust this PC once.</span><button class="link" id="trust-open">How</button>
+  </div>
+  <div class="grid" id="grid"></div>
+</section>
+
+<!-- One app -->
+<section class="screen" id="player" hidden>
+  <div class="stage" id="stage"><canvas id="screen"></canvas></div>
+  <div class="overlay" id="overlay" hidden>
+    <div class="card">
+      <img class="app-icon" id="overlay-icon" alt="">
+      <p id="overlay-text"></p>
+      <div class="buttons" id="overlay-buttons"></div>
+    </div>
+  </div>
+  <div class="chip" id="chip" hidden></div>
+  <nav class="navbar" id="navbar">
+    <button id="nav-back" aria-label="Back"><svg viewBox="0 0 24 24"><path d="M15 5 8 12l7 7"/></svg></button>
+    <button id="nav-apps" aria-label="All apps"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6.5"/></svg></button>
+    <button id="nav-keys" aria-label="Keyboard"><svg viewBox="0 0 24 24"><rect x="3" y="6.5" width="18" height="11" rx="2"/><path d="M7 10h.01M10.5 10h.01M14 10h.01M17.5 10h.01M8 14h8"/></svg></button>
+    <button id="nav-more" aria-label="More"><svg viewBox="0 0 24 24"><path d="M6 12h.01M12 12h.01M18 12h.01"/></svg></button>
+  </nav>
+  <textarea id="kbd" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false"
+            enterkeyhint="send" aria-label="Type into the app"></textarea>
+</section>
+
+<!-- Sheets -->
+<div class="sheet-back" id="sheet-back" hidden></div>
+<div class="sheet" id="menu" hidden></div>
+<div class="sheet" id="trust" hidden>
+  <h2>Trust this PC</h2>
+  <p>Safari plays smooth video only from secure pages. One time, let this device trust <b id="trust-pc"></b>:</p>
+  <ol>
+    <li><a class="primary small" href="/windroid.mobileconfig" id="trust-get">Get the profile</a>
+      and tap <b>Allow</b> when Safari asks.</li>
+    <li>Open <b>Settings</b>, tap <b>Profile Downloaded</b> near the top, then <b>Install</b>.</li>
+    <li>In <b>Settings &gt; General &gt; About &gt; Certificate Trust Settings</b>, turn on
+      <b id="trust-name"></b>.</li>
+    <li>Come back here. This page switches over by itself.</li>
+  </ol>
+  <p class="fine">It only vouches for addresses on your home network, never for websites. Its fingerprint
+    (Settings shows it under the profile's details) starts with <code id="trust-fp"></code>.
+    Remove it any time in Settings &gt; General &gt; VPN &amp; Device Management.</p>
+  <button class="ghost" id="trust-close">Done</button>
+</div>
+<div class="toast" id="toast" hidden></div>
+
+<script src="/s/wdcrypto.js"></script>
+<script src="/s/app.js"></script>
+</body>
+</html>
