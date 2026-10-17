@@ -81,8 +81,9 @@ class DiesWithUs(unittest.TestCase):
 class EveryLongLivedChild(unittest.TestCase):
     def test_goes_through_children_py(self):
         """subprocess.Popen only where a child is meant to outlive us: the emulator (taken over by the
-        next agent after a crash) and the agent that the MCP server starts."""
-        allowed = {"children.py", "vm.py", "ghost.py"}
+        next agent after a crash), the agent that the MCP server starts, the agent windroid-cli.exe
+        hands over to (app.py), and an update's installer, which replaces us (update.py)."""
+        allowed = {"children.py", "vm.py", "ghost.py", "app.py", "update.py"}
         for path in (ROOT / "androiddesktop").glob("*.py"):
             if path.name not in allowed:
                 self.assertIsNone(re.search(r"subprocess\.Popen\(", path.read_text(encoding="utf-8")),
