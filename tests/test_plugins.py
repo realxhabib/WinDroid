@@ -4,8 +4,8 @@ from unittest import mock
 
 from PIL import Image
 
-from androiddesktop import keys, overlay
-from androiddesktop.plugins import Geometry, Plugin, PluginHost
+from androiddesktop import emuview, keys, overlay
+from androiddesktop.plugins import AppHandle, Geometry, Plugin, PluginHost, _DisplayKeyboard, typeable
 
 
 class Typing(unittest.TestCase):
@@ -80,6 +80,96 @@ class Typing(unittest.TestCase):
             self.assertTrue(kb.paste("hello \u2014 you"))
         self.assertEqual(seen, ["hello - you"])  # on the clipboard while Ctrl+V went in
         self.assertEqual(clip[0], "mine")
+
+
+class DisplayTyping(unittest.TestCase):
+    """Text into an app on an emulator display: InputHelper lines and Android's clipboard, no window messages."""
+
+    def setUp(self):
+        self.surface = mock.Mock(view=7, display=12, point=(8554, "token"), slot=2, closed=False)
+        self.lines, self.clips = [], []
+        patches = [mock.patch.object(emuview.link, "helper", self.lines.append),
+                   mock.patch.object(emuview.link, "set_clipboard", lambda point, text: self.clips.append(text)),
+                   mock.patch.object(keys.win32gui, "IsWindow", return_value=True),
+                   mock.patch.object(keys, "_get_clipboard", return_value=None)]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        self.kb = _DisplayKeyboard(self.surface, sleep=lambda s: None)
+
+    def test_select_all_is_ctrl_a_on_the_display(self):
+        self.assertTrue(self.kb.select_all())
+        self.assertEqual(self.lines, ["key 12 0 113 0 12288", "key 12 0 29 0 12288", "key 12 1 29 0 12288",
+                                      "key 12 1 113 0 0"])
+
+    def test_paste_goes_through_androids_clipboard(self):
+        self.assertTrue(self.kb.insert("Can I? \u2019k"))
+        self.assertEqual(self.clips, ["Can I? 'k"])
+        self.assertIn("key 12 0 50 0 12288", self.lines)  # Ctrl+V
+        self.assertFalse(any(line.startswith("text") for line in self.lines))
+
+    def test_paste_puts_the_pcs_clipboard_back_if_the_text_came_across(self):
+        clip = ["mine"]
+        emuview.link.set_clipboard = lambda point, text: clip.__setitem__(0, text)  # the emulator shares it
+        with mock.patch.object(keys, "_get_clipboard", lambda: clip[0]), \
+                mock.patch.object(keys, "_set_clipboard", lambda t: clip.__setitem__(0, t) or True):
+            self.assertTrue(self.kb.paste("hello"))
+        self.assertEqual(clip[0], "mine")
+
+    def test_typing_sends_text_and_pastes_what_the_key_map_cant_type(self):
+        self.assertEqual(typeable("Hi \U0001F600!"), [("keys", "Hi "), ("paste", "\U0001F600"), ("keys", "!")])
+        progress = []
+        self.assertTrue(self.kb.type("Hi \U0001F600", progress.append))
+        texts = [line for line in self.lines if line.startswith("text")]
+        self.assertEqual(texts, ["text 12 48", "text 12 69", "text 12 20"])
+        self.assertEqual(self.clips, ["\U0001F600"])
+        self.assertEqual(progress[-1], 1.0)
+
+    def test_stops_when_the_display_closes(self):
+        self.surface.closed = True
+        self.assertFalse(self.kb.type("hello"))
+        self.assertEqual(self.kb.stopped, "the window went away")
+        self.assertEqual(self.lines, [])
+
+
+class Handle(unittest.TestCase):
+    """AppHandle picks the emulator display's paths when the window shows one, scrcpy's otherwise."""
+
+    def handle(self, surface):
+        win = mock.Mock(hwnd=1, child=7, view=7, closing=False, protected=None, surface=surface, display_id=12)
+        win.app.package = "com.example"
+        return AppHandle(mock.Mock(), win)
+
+    def test_on_an_emulator_display(self):
+        surface = mock.Mock(view=7, closed=False, point=(1, "t"), slot=2)
+        surface.capture.return_value = Image.new("RGB", (40, 30))
+        app = self.handle(surface)
+        with mock.patch("androiddesktop.plugins.win32gui") as gui, \
+                mock.patch("androiddesktop.plugins.winapi.capture") as printwindow, \
+                mock.patch("androiddesktop.plugins.time.sleep"):
+            gui.IsWindow.return_value = True
+            gui.GetClientRect.return_value = (0, 0, 40, 30)
+            self.assertEqual(app.screenshot().size, (40, 30))
+            surface.capture.assert_called_once_with(40, 30)
+            printwindow.assert_not_called()
+            self.assertIsInstance(app.keyboard(), _DisplayKeyboard)
+            app.click(5, 6)
+        self.assertEqual(surface.touch.call_args_list, [mock.call(5, 6, True), mock.call(5, 6, False)])
+
+    def test_in_a_scrcpy_window(self):
+        app = self.handle(None)
+        with mock.patch("androiddesktop.plugins.win32gui") as gui, \
+                mock.patch("androiddesktop.plugins.winapi.capture") as printwindow:
+            gui.IsWindow.return_value = True
+            gui.GetClientRect.return_value = (0, 0, 40, 30)
+            app.screenshot()
+            printwindow.assert_called_once_with(7, 40, 30)
+            kb = app.keyboard()
+        self.assertIs(type(kb), keys.Keyboard)
+
+    def test_a_closed_display_isnt_used(self):
+        app = self.handle(mock.Mock(view=7, closed=True))
+        self.assertIsNone(app._surface())
 
 
 class Placement(unittest.TestCase):

@@ -10,6 +10,7 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 
 /**
  * Keys, text and the mouse wheel for app windows on the emulator's own displays, run via app_process
@@ -17,11 +18,13 @@ import java.nio.charset.StandardCharsets;
  *
  *   CLASSPATH=/data/local/tmp/androiddesktop-input.jar app_process / InputHelper
  *
- * The window's touches go to the emulator's touchscreen for that display (gRPC); keys can't, as the
- * emulator has one keyboard and Android would send it to whichever display has focus. So keys are
- * injected here with the window's display id, which delivers them to that display's focused window,
- * as `input -d` does, without a process per key. One command per line, no answers:
+ * Everything is injected here with the window's display id, which delivers it to that display, as
+ * `input -d` does, without a process per event. Keys can't go to the emulator: it has one keyboard,
+ * which Android would send to whichever display has focus. Touches could (gRPC), but the emulator's
+ * touchscreens say they're styluses too, and Android then offers handwriting ("Try out your stylus")
+ * in place of the keyboard; these are a finger on a touchscreen. One command per line, no answers:
  *
+ *   touch <display> <action 0=down 1=up 2=move> <x> <y>   one finger
  *   key <display> <action 0=down 1=up> <keycode> <repeat> <metaState>
  *   text <display> <hex UTF-8>                     typed via the virtual keyboard's key map
  *   scroll <display> <x> <y> <vscroll> <hscroll>   a mouse wheel turn at x, y (1.0 = one notch)
@@ -32,13 +35,14 @@ import java.nio.charset.StandardCharsets;
  * Prints "ready <version>" once it can inject.
  */
 public final class InputHelper {
-    static final int VERSION = 3;
+    static final int VERSION = 4;
     static final int INJECT_ASYNC = 0;
 
     static Object inputManager;
     static Method inject;
     static Method setDisplayId;
     static final KeyCharacterMap keys = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD);
+    static final HashMap<Integer, Long> fingerDown = new HashMap<>();  // display -> when its finger went down
 
     public static void main(String[] args) throws Exception {
         Class<?> imClass;
@@ -65,6 +69,9 @@ public final class InputHelper {
 
     static void handle(String[] a) throws Exception {
         switch (a[0]) {
+            case "touch":
+                finger(Integer.parseInt(a[1]), Integer.parseInt(a[2]), Float.parseFloat(a[3]), Float.parseFloat(a[4]));
+                break;
             case "key": {
                 long now = SystemClock.uptimeMillis();
                 KeyEvent e = new KeyEvent(now, now, Integer.parseInt(a[2]), Integer.parseInt(a[3]), Integer.parseInt(a[4]),
@@ -118,6 +125,33 @@ public final class InputHelper {
             default:
                 System.err.println("InputHelper: unknown command " + a[0]);
         }
+    }
+
+    static void finger(int display, int action, float x, float y) throws Exception {
+        long now = SystemClock.uptimeMillis();
+        Long down = fingerDown.get(display);
+        if (action == MotionEvent.ACTION_DOWN) {
+            if (down != null) {  // a lift we never got: end that touch first
+                finger(display, MotionEvent.ACTION_UP, x, y);
+            }
+            fingerDown.put(display, down = now);
+        } else if (down == null) {
+            return;  // a move or lift without a touch
+        } else if (action == MotionEvent.ACTION_UP) {
+            fingerDown.remove(display);
+        }
+        MotionEvent.PointerProperties[] props = {new MotionEvent.PointerProperties()};
+        props[0].id = 0;
+        props[0].toolType = MotionEvent.TOOL_TYPE_FINGER;
+        MotionEvent.PointerCoords[] coords = {new MotionEvent.PointerCoords()};
+        coords[0].x = x;
+        coords[0].y = y;
+        coords[0].pressure = action == MotionEvent.ACTION_UP ? 0f : 1f;
+        coords[0].size = 1f;
+        MotionEvent e = MotionEvent.obtain(down, now, action, 1, props, coords, 0, 0, 1f, 1f, 0, 0,
+                InputDevice.SOURCE_TOUCHSCREEN, 0);
+        send(e, display);
+        e.recycle();
     }
 
     static void mouse(int display, int action, float x, float y, float vscroll, float hscroll) throws Exception {
