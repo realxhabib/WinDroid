@@ -9,6 +9,7 @@
     python  -m androiddesktop doctor           # check whether this PC can run Android
     python  -m androiddesktop mcp              # the MCP server for AI agents (mcp.py)
     pythonw -m androiddesktop uninstall        # the uninstaller's: quit, remove the app shortcuts we made
+    python  -m androiddesktop camera [install] # the Android Desktop Camera (see camera.py)
 
 Installed, WinDroid.exe takes the place of pythonw -m androiddesktop and windroid-cli.exe that of
 python -m androiddesktop (see packaging/).
@@ -43,7 +44,7 @@ import win32api  # noqa: E402
 import win32con  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from . import adb, biometrics, checks, emuview, ghost, hello, runtime, shortcuts, state, update  # noqa: E402
+from . import adb, biometrics, camera, checks, emuview, ghost, hello, runtime, shortcuts, state, update  # noqa: E402
 from .catalog import Catalog  # noqa: E402
 from .log import log, log_uncaught  # noqa: E402
 from .manager import TRAY_OPEN, TRAY_QUIT, TRAY_STOP, WindowManager, agent_running, send_to_agent  # noqa: E402
@@ -657,6 +658,8 @@ def main() -> None:
         runtime.install(lambda m, f: print(f"\r{m:<70} {f * 100:5.1f}%", end="", flush=True))
         print()
         return
+    if command == "camera":
+        sys.exit(camera.main(args[1:]))
     if command == "doctor":
         installed = runtime.installed()
         running = installed and adb.online() and adb.booted()

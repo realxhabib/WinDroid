@@ -93,7 +93,9 @@ running):
 If you set a screen-lock PIN or password in Android (Google Play may ask for one), Android starts
 **locked** after every boot, like a phone after a restart: your apps' data stays encrypted until the
 PIN is entered. The launcher then asks for it, and apps you open wait with an **Unlock** button. Wrong
-tries count towards Android's own lockout. To stop this, remove the screen lock in Android's
+tries count towards Android's own lockout. Once Android accepts the PIN, Android Desktop also enters
+it on Android's own lock screen, which no window shows, so Android counts as fully unlocked, as a
+phone would after you unlock it. To stop all this, remove the screen lock in Android's
 **Settings > Security > Screen lock**.
 
 To skip typing the PIN, tick **Unlock with Windows Hello from now on** under the PIN field (shown when
@@ -112,7 +114,24 @@ until a fingerprint is added, if Windows Hello is set up on the PC): Android's S
 **Add fingerprint**, asks for your Android PIN, and WinDroid touches the sensor each time
 Android asks. From then on, whenever Android waits for a fingerprint, Windows Hello asks you instead,
 above the window of the app that's asking, and touches the sensor once it's you. Canceling Windows
-Hello leaves the finger off.
+Hello leaves the finger off and cancels Android's prompt, so the app hears "canceled".
+
+### Webcam
+
+Android uses your PC's webcam as its front camera. On its own, though, Android sees only a tall
+slice from the left of a widescreen webcam's picture (see Known limitations). To give it the whole
+picture, install the **Android Desktop Camera** once (Windows 11; Windows asks for administrator
+rights):
+
+```powershell
+.venv\Scripts\python -m androiddesktop camera install
+```
+
+From the next start of Android, apps show the webcam's whole picture, upright, with black bars around
+it: above and below in videos and video calls, and also on one side in photos. The Android Desktop
+Camera is a Windows virtual camera that turns on your first webcam only while something uses it.
+Other Windows apps list it too, but its picture is laid out for Android. `camera uninstall` removes
+it.
 
 ### Command line
 
@@ -130,6 +149,8 @@ commands that print.
 | `WinDroid.exe mcp` | The MCP server for AI agents (below), over stdin/stdout |
 | `windroid-cli.exe setup` | Download and install the Android runtime, with progress in the console |
 | `windroid-cli.exe doctor` | Check whether this PC can run Android, and print what's wrong |
+| `windroid-cli.exe camera` | Is the Android Desktop Camera installed? `camera install` / `camera uninstall` |
+| `windroid-cli.exe camera test on` | The Android Desktop Camera shows a test pattern instead of the webcam (`off` to stop) |
 
 From a source checkout (see Development), `pythonw -m androiddesktop` takes the place of
 `WinDroid.exe` and `python -m androiddesktop` that of `windroid-cli.exe`.
@@ -267,11 +288,38 @@ Launcher (WebView2)      App window (Win32, frameless)            App window (8t
 - **Locked Android** (`vm.py`, `adb.py`): after boot, `sys.user.0.ce_available` and
   `am get-started-user-state 0` tell whether the user is still locked ("direct boot"). Locked, the VM
   reports `locked`, the app list isn't refreshed (Android lists only its direct-boot apps then), and
-  the PIN from the launcher goes to `locksettings verify`, which unlocks the user's storage.
+  the PIN from the launcher goes to `locksettings verify`, which unlocks the user's storage. That
+  leaves Android's lock screen (keyguard) up on display 0 with "strong auth required after boot"
+  (`dumpsys trust`: `deviceLocked=1`, `strongAuthRequired=0x1`), which the shell can't clear: Android
+  would go on refusing fingerprints in its own "confirm it's you" screens and keep apps'
+  fingerprint dialogs behind its lock screen. So `wm dismiss-keyguard` brings up the keyguard's PIN
+  pad, and once display 0's keyboard focus is on it (`dumpsys window displays`: `NotificationShade`;
+  SystemUI's dump: bouncer showing, with a PIN or password view, never a SIM PIN pad), the PIN goes
+  there with `input -d 0 text` and Enter, once. This happens before the VM reports `running`, while
+  no app display can take the focus from display 0.
 - **Camera** (`runtime.py`): before every start of Android, `emulator -webcam-list` tells which
-  webcams are plugged in, and both of Android's cameras (`hw.camera.front`, `hw.camera.back` in the
-  AVD's `config.ini`) are set to the first one by label (`webcam0`), or to `none` without one. On a PC
-  every camera faces you, so apps that pick the "back" camera (QR code scanners) get the good one too.
+  webcams are plugged in, and Android's front camera (`hw.camera.front` in the AVD's `config.ini`) is
+  set to the first one by label (`webcam0`), or to `none` without one. There's no back camera, as on
+  a Chromebook: giving both the same webcam makes the emulator offer only a back one (video calls
+  look for the front), and a second webcam is often a closed laptop's, which only shows black.
+  When the **Android Desktop Camera** is listed (and a real webcam is too), it's the one.
+- **Android Desktop Camera** (`camera.py`, `helper/camera/AndroidDesktopCamera.cpp`): Android's camera
+  driver (in Google's system image) always presents a phone camera, a 1280×960 sensor mounted at 90°,
+  so the emulator asks the webcam for 1280×960, turns each frame as a phone held upright would, which
+  keeps only a 720×960 strip from its left edge (`convert_frame_fast` in the emulator), and Android
+  turns that strip back upright. For a 16:9 stream (video recording, most video calls) Android's
+  camera driver then keeps only the strip's left three quarters, 540×960 (the recordings show it
+  too). The Android Desktop Camera is a Windows 11 virtual camera (`MFCreateVirtualCamera`, a Media
+  Foundation media source that Windows' Frame Server service loads) that offers exactly 1280×960
+  NV12 and draws the first physical webcam (read at its native size nearest 1280×720, 30 fps) into
+  that 540×960 area, scaled to fit, so photos and videos both get the whole picture. Frames go out
+  at a steady 30 fps from the start, the last picture repeated while the webcam is late, so the
+  emulator never has to make up an empty frame. Installing it copies the DLL to
+  `%ProgramFiles%\Android Desktop`, where the service can read it, and registers it for all users
+  (`DllRegisterServer`, which also creates the camera; each build gets its own file name, so an
+  update never has to replace a DLL the service still holds; the service lets go of the old one
+  about 40 seconds after the last app stops using the camera). It logs to
+  `%ProgramData%\AndroidDesktop\camera-LOCAL-SERVICE.log`.
 - **Windows Hello** (`biometrics.py`, `hello.py`): the emulator's console puts a finger on Android's
   virtual sensor (`adb emu finger touch 1`). Android's `BiometricScheduler` runs one client at a time,
   shown in `dumpsys fingerprint` as its "Current operation" with the package that asked (an
@@ -361,6 +409,10 @@ launcher in the Start menu itself (as **WinDroid**) and never updates itself; it
   `%LOCALAPPDATA%\AndroidDesktop\devtools` (see the script). The built jar is committed, so
   running the app doesn't need them.
 - `python tools/make_icon.py` redraws the app icon.
+- `python tools/build_camera.py` rebuilds `androiddesktop/assets/AndroidDesktopCamera.dll` from
+  `helper/camera`. It needs Visual Studio 2022 (or its Build Tools) with the C++ workload and a
+  Windows 11 SDK. The built DLL is committed, so installing the camera doesn't need them. After a
+  rebuild, `camera install` again (`camera` says when the installed one is outdated).
 
 ### Build the installer
 
@@ -409,15 +461,28 @@ build an installer without publishing it.
   headless proved unreliable.
 - The camera and microphone are the PC's: the first webcam the emulator lists, and the default
   microphone. A webcam plugged in or out is noticed at the next start of Android, not while it runs.
-- After a start, unlocking from the launcher (PIN or Windows Hello) unlocks Android's storage, but
-  Android's own lock screen stays up on its main display, which no window shows. Android then
-  treats the PIN as not entered yet. So Android's own "confirm it's you" screens (Settings) ask for
-  the PIN instead of a fingerprint, and the lock screen never asks for a fingerprint. Apps' own
-  fingerprint prompts (BiometricPrompt) aren't affected; Google's passkeys and Play purchases
-  haven't been tried yet.
-- Android draws an app's fingerprint dialog behind that lock screen, so it's never shown and can't be
-  canceled from the PC. If you cancel Windows Hello, the app keeps waiting until it gives up or another
-  app comes to the front (Android then cancels it), or until it asks again.
+- Without the Android Desktop Camera (see Webcam), Android sees only part of the webcam's picture,
+  a tall section from its left side. Android's camera driver (in Google's system image) always
+  presents a phone camera: 4:3 at most 1280×960, mounted at 90°, whatever `hw.camera.*.orientation`
+  says. The emulator turns each webcam frame to match a phone held upright and keeps the part that
+  fits from the left edge. With a widescreen webcam that doesn't offer 1280×960 (most don't), some
+  frames also fail to convert ("Could not convert from BGR4 to I420" in `emulator.log`). The
+  emulator's other camera sources (`imagefile:`, `videofile:`, `environment`) can't stand in: they
+  aren't live, and they fill the frame, cutting off the sides.
+- With it, the picture is whole but small: 540×304 pixels of Android's 960×1280 portrait frame, and
+  in photos it sits to one side. Its layout follows the emulator's and Android's crops, which assume
+  Android's main display stays portrait (it does here). Other Windows apps see the picture on the
+  left of a black frame. The Android Desktop Camera needs Windows 11. While Android uses it,
+  other apps can use the webcam only in the format it's reading (1280×720), and another app using
+  the webcam first (the Windows Camera app, say) can stop Android getting it at all.
+- Unlocking from the launcher (PIN or Windows Hello) takes a few seconds longer than the PIN check
+  itself: the PIN is entered on Android's own lock screen too, and Android plays its unlock animation.
+  If that part fails (a password with characters other than plain ASCII, or with `%s` in it, which
+  Android's `input text` can't type), apps still work, but Android treats the PIN as not entered
+  yet: its own "confirm it's you" screens (Settings) ask for the PIN instead of a fingerprint, and if
+  you cancel Windows Hello, the app keeps waiting until it gives up or another app comes to the front.
+  The log then says "Android's lock screen stays up".
+- Google's passkeys and Play purchases haven't been tried with the fingerprint yet.
 - Notifications stay inside Android for now.
 - AI agents: moving an app from its hidden display into a window changes its screen size, so Android
   recreates the app's screen, as when a phone rotates. Well-made apps keep their state (Clock's

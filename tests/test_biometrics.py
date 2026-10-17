@@ -1,9 +1,13 @@
 """Windows Hello for Android's fingerprint prompts: reading what Android says, and what we do about it."""
+import ctypes
 import unittest
 import uuid
 from unittest import mock
 
-from androiddesktop import biometrics, hello, runtime
+import win32con
+import win32gui
+
+from androiddesktop import biometrics, camera, hello, runtime
 from androiddesktop.biometrics import Operation
 
 IDLE = """\
@@ -116,6 +120,7 @@ class Prompts(unittest.TestCase):
 
     def setUp(self):
         self.manager = mock.Mock()
+        self.manager.vm.state = biometrics.RUNNING
         self.chrome = FakeWindow("com.android.chrome", 7, 0x700)
         self.play = FakeWindow("com.android.vending", 8, 0x800, active=True)
         self.manager.windows = {"a": self.chrome, "b": self.play}
@@ -200,6 +205,22 @@ class Prompts(unittest.TestCase):
         self.assertEqual([bool(biometrics.WAKE.search(line)) for line in lines], [True, True, False, False, False])
         self.assertIn("-s BiometricScheduler:V", biometrics.LOGCAT)
 
+    def test_hello_waits_as_long_as_android_does(self):
+        # No time limit of its own: giving up while Android still asks would cancel the app's prompt
+        # under a user who's on their way to verify.
+        verify, _ = self.run_check([AUTH])
+        self.assertIsNone(verify.call_args.kwargs["timeout"])
+
+    def test_hello_goes_away_when_android_stops(self):
+        with mock.patch.object(biometrics.adb, "shell", side_effect=lambda c, timeout=0: STACKS if "stack" in c else AUTH), \
+                mock.patch.object(biometrics.hello, "verify", return_value=hello.CANCELED) as verify:
+            self.bridge._check()
+            wanted = verify.call_args.kwargs["wanted"]
+        with mock.patch.object(biometrics.adb, "shell", side_effect=OSError("adb: device offline")):
+            self.assertTrue(wanted())  # can't tell for a moment: keep asking
+            self.manager.vm.state = "off"
+            self.assertFalse(wanted())
+
     def test_waits_for_the_dialog(self):
         verify, touch = self.run_check([WAITING])
         verify.assert_not_called()
@@ -248,8 +269,52 @@ class Cameras(unittest.TestCase):
 
     def test_pick(self):
         self.assertEqual(runtime.pick_cameras(runtime.parse_webcams(self.LISTING)),
-                         {"hw.camera.front": "webcam0", "hw.camera.back": "webcam0"})
+                         {"hw.camera.front": "webcam0", "hw.camera.back": "none"})
         self.assertEqual(runtime.pick_cameras([]), {"hw.camera.front": "none", "hw.camera.back": "none"})
+
+    def test_pick_the_android_desktop_camera(self):
+        listing = self.LISTING + (
+            " Camera 'Android Desktop Camera (Windows Virtual Camera)' can be specified by label as 'webcam2' or by "
+            "id as '\\\\?\\swd#vcamdevapi#9dd4ed72f8fb#{e5323777-f976-4f5b-9b55-b94699c46e44}' and will use pixel "
+            "format 'NV12'\n")
+        webcams = runtime.parse_webcams(listing)
+        self.assertEqual(webcams[2], ("Android Desktop Camera (Windows Virtual Camera)", "webcam2"))
+        self.assertTrue(camera.is_ours(webcams[2][0]))
+        self.assertFalse(camera.is_ours("Android Desktop Camera Pro"))
+        self.assertEqual(runtime.pick_cameras(webcams)["hw.camera.front"], "webcam2")
+        # Without a webcam to read, it only shows black: no camera, as without it.
+        self.assertEqual(runtime.pick_cameras([(camera.NAME, "webcam0")])["hw.camera.front"], "none")
+
+
+class CameraInstall(unittest.TestCase):
+    def test_each_build_gets_its_own_file(self):
+        self.assertRegex(camera.install_name(b"one"), r"^AndroidDesktopCamera-[0-9a-f]{12}\.dll$")
+        self.assertNotEqual(camera.install_name(b"one"), camera.install_name(b"two"))
+
+    def test_up_to_date(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            built = Path(d, "AndroidDesktopCamera.dll")
+            built.write_bytes(b"build")
+            with mock.patch.object(camera, "DLL", built), \
+                    mock.patch.object(camera, "installed_dll", return_value=Path(d, camera.install_name(b"build"))):
+                self.assertTrue(camera.up_to_date())
+            with mock.patch.object(camera, "DLL", built), \
+                    mock.patch.object(camera, "installed_dll", return_value=Path(d, camera.install_name(b"old"))):
+                self.assertFalse(camera.up_to_date())
+            with mock.patch.object(camera, "DLL", built), mock.patch.object(camera, "installed_dll", return_value=None):
+                self.assertFalse(camera.up_to_date())
+
+    def test_test_pattern_flag(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(camera, "TEST_FLAG", Path(d, "x", "flag")):
+            camera.test_pattern(True)
+            self.assertTrue(camera.TEST_FLAG.exists())
+            camera.test_pattern(False)
+            camera.test_pattern(False)
+            self.assertFalse(camera.TEST_FLAG.exists())
 
 
 class Hello(unittest.TestCase):
@@ -270,6 +335,169 @@ class Hello(unittest.TestCase):
             self.assertFalse(hello.has_pin())
             hello.PIN_FILE.write_bytes(b"junk")
             self.assertIsNone(hello.remembered_pin())
+
+
+class Clock:
+    """Stands in for hello's `time`: sleeping moves the clock on."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+class FakeOperation:
+    """hello._call on an IAsyncOperation<UserConsentVerificationResult> that's answered at answer_at
+    seconds (never if None)."""
+
+    def __init__(self, clock, answer_at=None, answer=hello.VERIFIED):
+        self.clock, self.answer_at, self.answer = clock, answer_at, answer
+        self.canceled_at = None
+
+    def call(self, obj, index, *args):
+        if index == 7:  # get_Status
+            done = self.answer_at is not None and self.clock.now >= self.answer_at
+            args[0][1]._obj.value = hello.COMPLETED if done else hello.STARTED
+        elif index == 8:  # GetResults
+            args[0][1]._obj.value = self.answer
+        elif index == 9:  # Cancel
+            self.canceled_at = self.clock.now
+
+
+class FakeDesktop:
+    """win32gui as hello sees it: top-level windows, hwnd -> (class, owner). SC_CLOSE closes a window
+    unless it's stubborn; any other message is refused, as CredentialUIBroker refuses WM_CLOSE."""
+    error = win32gui.error
+
+    def __init__(self, windows, stubborn=()):
+        self.windows, self.stubborn, self.posted = dict(windows), set(stubborn), []
+
+    def EnumWindows(self, fn, extra):
+        for h in list(self.windows):
+            fn(h, extra)
+
+    def GetClassName(self, h):
+        return self.windows[h][0]
+
+    def IsWindowVisible(self, h):
+        return True
+
+    def GetWindow(self, h, which):
+        return self.windows[h][1]
+
+    def PostMessage(self, h, message, wparam, lparam):
+        if message != win32con.WM_SYSCOMMAND:
+            raise self.error(5, "PostMessage", "Access is denied.")
+        self.posted.append(h)
+        if wparam == win32con.SC_CLOSE and h not in self.stubborn:
+            del self.windows[h]
+
+
+class HelloGivesUp(unittest.TestCase):
+    """When verify stops waiting (time's up, or the prompt isn't wanted any more), the Windows Hello
+    dialog goes too: canceling the request alone leaves it up (seen 2026-10-15), and the user then
+    verifies for nothing."""
+    OURS, THEIRS = 0x700, 0x900  # the windows the dialogs are above
+
+    def setUp(self):
+        self.clock = Clock()
+        for p in (mock.patch.object(hello, "time", self.clock), mock.patch.object(hello, "log")):
+            p.start()
+            self.addCleanup(p.stop)
+
+    # ------------------------------------------------------------------ waiting
+    def result(self, op, timeout, wanted=None):
+        with mock.patch.object(hello, "_query", return_value=ctypes.c_void_p(1)), \
+                mock.patch.object(hello, "_release"), mock.patch.object(hello, "_call", side_effect=op.call):
+            return hello._result(ctypes.c_void_p(2), timeout, wanted)
+
+    def test_answered(self):
+        op = FakeOperation(self.clock, answer_at=5)
+        self.assertEqual(self.result(op, 120), hello.VERIFIED)
+        self.assertIsNone(op.canceled_at)
+
+    def test_time_up(self):
+        op = FakeOperation(self.clock)
+        self.assertIsNone(self.result(op, 120))
+        self.assertAlmostEqual(op.canceled_at, 120, delta=0.1)
+
+    def test_no_time_limit_while_wanted(self):
+        op = FakeOperation(self.clock)
+        self.assertIsNone(self.result(op, None, wanted=lambda: self.clock.now < 600))
+        self.assertAlmostEqual(op.canceled_at, 600, delta=1.1)  # wanted is asked about once a second
+        op = FakeOperation(self.clock, answer_at=self.clock.now + 900)
+        self.assertEqual(self.result(op, None, wanted=lambda: True), hello.VERIFIED)
+        self.assertIsNone(op.canceled_at)
+
+    # ------------------------------------------------------------------ verify
+    def verify(self, waited, closes=True):
+        def call(obj, index, *args):
+            if index == 6:  # RequestVerificationForWindowAsync: the operation comes out
+                args[3][1]._obj.value = 0x1234
+
+        with mock.patch.object(hello, "_factory", return_value=ctypes.c_void_p(1)), \
+                mock.patch.object(hello, "_hstring", return_value=ctypes.c_void_p(2)), \
+                mock.patch.object(hello, "combase"), mock.patch.object(hello, "_release"), \
+                mock.patch.object(hello, "_call", side_effect=call), \
+                mock.patch.object(hello, "_dialogs", return_value={0x51}), \
+                mock.patch.object(hello, "_result", return_value=waited), \
+                mock.patch.object(hello, "_close_dialog", return_value=closes) as close:
+            return hello.verify(self.OURS, "Confirm it's you", timeout=None, wanted=lambda: True), close
+
+    def test_giving_up_closes_the_dialog(self):
+        result, close = self.verify(None)
+        self.assertEqual(result, hello.CANCELED)
+        close.assert_called_once_with(self.OURS, {0x51})  # with the dialogs that were up before we asked
+        hello.log.assert_not_called()
+
+    def test_an_answer_leaves_the_dialog_to_windows(self):
+        for answer in (hello.VERIFIED, hello.CANCELED):  # the user canceled it themselves
+            result, close = self.verify(answer)
+            self.assertEqual(result, answer)
+            close.assert_not_called()
+
+    def test_a_dialog_that_wont_close_is_logged(self):
+        result, _ = self.verify(None, closes=False)
+        self.assertEqual(result, hello.CANCELED)
+        hello.log.assert_called_once()
+
+    # ------------------------------------------------------------------ closing the dialog
+    def close(self, windows, before=(), stubborn=()):
+        desktop = FakeDesktop(windows, stubborn)
+        with mock.patch.object(hello, "win32gui", desktop):
+            closed = hello._close_dialog(self.OURS, hello._dialogs() & set(before))
+        return closed, desktop
+
+    def test_closes_only_our_new_dialog(self):
+        windows = {0x51: (hello.DIALOG_CLASS, self.THEIRS),  # another app's, up before we asked
+                   0x52: (hello.DIALOG_CLASS, self.OURS),
+                   0x53: (hello.DIALOG_CLASS, self.THEIRS),  # another app's, new
+                   0x54: ("Chrome_WidgetWin_1", 0)}
+        closed, desktop = self.close(windows, before={0x51})
+        self.assertTrue(closed)
+        self.assertEqual(desktop.posted, [0x52])
+        self.assertEqual(set(desktop.windows), {0x51, 0x53, 0x54})
+
+    def test_closes_it_while_its_still_opening(self):
+        # The dialog has no owner for a moment as it opens.
+        closed, desktop = self.close({0x52: (hello.DIALOG_CLASS, 0)})
+        self.assertTrue(closed)
+        self.assertEqual(desktop.posted, [0x52])
+
+    def test_nothing_to_close(self):
+        closed, desktop = self.close({0x54: ("Chrome_WidgetWin_1", 0)})
+        self.assertTrue(closed)
+        self.assertEqual(desktop.posted, [])
+        self.assertLess(self.clock.now, 1.5)  # looked for a second, in case it was still coming up
+
+    def test_a_dialog_that_stays(self):
+        closed, desktop = self.close({0x52: (hello.DIALOG_CLASS, self.OURS)}, stubborn={0x52})
+        self.assertFalse(closed)
+        self.assertEqual(desktop.posted, [0x52] * 3)  # asked again each second, for 3 s
 
 
 class UnlockWithHello(unittest.TestCase):

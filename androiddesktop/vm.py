@@ -9,10 +9,12 @@ If the emulator dies under us, refresh() notices and the next ensure_running() b
 windows call it when they reconnect, so a crash heals itself.
 
 If a screen-lock PIN is set in Android, it boots LOCKED: until the PIN is entered (unlock()), apps' data
-stays encrypted and only a few system apps can start. App windows wait for the unlock.
+stays encrypted and only a few system apps can start. App windows wait for the unlock. The PIN is then
+entered on Android's own lock screen too, so Android counts as fully unlocked (see _dismiss_keyguard()).
 """
 from __future__ import annotations
 
+import re
 import shlex
 import shutil
 import subprocess
@@ -42,6 +44,35 @@ DESKTOP_TWEAKS = "; ".join([
     # A PC keyboard is attached: keep the on-screen keyboard out of the way.
     "settings put secure show_ime_with_hard_keyboard 0",
 ])
+
+# Android's own lock screen ("keyguard") on display 0, which no window shows: Android's verdict, display
+# 0's keyboard focus, and SystemUI's bouncer (the PIN pad) with the security view it holds.
+KEYGUARD_QUERY = ("dumpsys trust; echo @@next@@; dumpsys window displays; echo @@next@@; "
+                  "dumpsys activity service com.android.systemui/.SystemUIService "
+                  "CentralSurfacesGoogle CentralSurfacesImpl NotificationShadeWindowControllerImpl")
+UNLOCKED, ASKING, WAITING = "unlocked", "asking", "waiting"
+
+
+def parse_keyguard(out: str) -> str:
+    """From KEYGUARD_QUERY: UNLOCKED once Android counts as unlocked (deviceLocked=0). ASKING while its lock
+    screen asks for the PIN or password and has display 0's keyboard focus: the only time it may be typed
+    there. Otherwise WAITING, also when part of the answer is missing."""
+    parts = out.split("@@next@@")
+    if len(parts) != 3:
+        return WAITING
+    trust, windows, systemui = parts
+    locked = re.search(r"\(current\):.*\bdeviceLocked=(\d)", trust)
+    if locked and locked.group(1) == "0":
+        return UNLOCKED
+    displays = re.split(r"^  Display: mDisplayId=(\d+)", windows, flags=re.M)
+    display0 = next((displays[i + 1] for i in range(1, len(displays) - 1, 2) if displays[i] == "0"), "")
+    focused = re.search(r"^  mCurrentFocus=Window\{\S+ u\d+ NotificationShade\}$", display0, re.M)
+    # The security views SystemUI shows: a SIM PIN pad must never get the screen-lock PIN.
+    shown = set(re.findall(r"com\.android\.keyguard\.Keyguard(\w+)View\{\S+ V", systemui))
+    if (locked and focused and "isBouncerShowing(): true" in systemui and shown & {"PIN", "Password"}
+            and not shown & {"SimPin", "SimPuk", "Pattern"}):
+        return ASKING
+    return WAITING
 
 
 class VM:
@@ -79,7 +110,8 @@ class VM:
         elif self.state in (RUNNING, LOCKED) and self._died():
             log("vm: Android stopped unexpectedly")
             self._set(OFF, "Android stopped unexpectedly.")
-        elif self.state == LOCKED and adb.user_locked() is False:
+        elif self.state == LOCKED and not self._unlocking.locked() and adb.user_locked() is False:
+            # (Not while unlock() is at it: it says RUNNING only once Android's lock screen is done too.)
             log("vm: Android was unlocked")
             self._set(RUNNING)
         return self.state
@@ -201,10 +233,49 @@ class VM:
             else:
                 log("vm: still locked after the PIN was accepted")
                 return "Android accepted the PIN but is still unlocking. Try again in a moment."
-            adb.shell("input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard", timeout=15)
+            # Before RUNNING: app windows only add their displays then, so display 0 still has the focus.
+            self._dismiss_keyguard(pin)
             log("vm: unlocked")
             self._set(RUNNING)
             return ""
+
+    def _dismiss_keyguard(self, pin: str) -> bool:
+        """`locksettings verify` unlocks the user's storage, but Android's own lock screen stays up on
+        display 0, which no window shows, and Android goes on treating the PIN as not entered since boot:
+        its own "confirm it's you" screens and its lock screen never offer the fingerprint, apps see
+        KeyguardManager.isDeviceLocked(), and apps' fingerprint dialogs sit behind it. Nothing but entering
+        the PIN on that lock screen ends this (shell may not clear "strong auth required"), so it's typed
+        there too, as the user agreed: only once Android has accepted it, only while display 0's keyboard
+        focus is on the lock screen's PIN or password field, and at most once. True once Android counts
+        as unlocked. The PIN never goes into a log, nor does an error about typing it (it would repeat it)."""
+        if "%s" in pin or any(not 32 <= ord(c) < 127 for c in pin):
+            log("vm: Android's lock screen stays up: `input text` can't type this password")
+            return False
+        try:
+            adb.shell("input keyevent KEYCODE_WAKEUP; wm dismiss-keyguard", timeout=15)  # shows the PIN pad
+            for _ in range(20):
+                state = parse_keyguard(adb.shell(KEYGUARD_QUERY, timeout=15))
+                if state != WAITING:
+                    break
+                time.sleep(0.25)
+            if state == UNLOCKED:
+                return True
+            if state != ASKING:
+                log("vm: Android's lock screen stays up: it didn't ask for the PIN on display 0")
+                return False
+            # `input -d 0` only ever reaches display 0's focused window; `input text` reads %s as a space.
+            adb.shell("input -d 0 text " + shlex.quote(pin.replace(" ", "%s")), timeout=15)
+            if parse_keyguard(adb.shell(KEYGUARD_QUERY, timeout=15)) == ASKING:  # not if it confirmed by itself
+                adb.shell("input -d 0 keyevent KEYCODE_ENTER", timeout=15)
+            for _ in range(20):
+                if parse_keyguard(adb.shell(KEYGUARD_QUERY, timeout=15)) == UNLOCKED:
+                    log("vm: Android's lock screen dismissed")
+                    return True
+                time.sleep(0.25)
+            log("vm: Android's lock screen stays up after the PIN was entered there")
+        except Exception as e:  # e.g. TimeoutExpired, whose message has the command, PIN and all
+            log(f"vm: Android's lock screen stays up: {type(e).__name__}")
+        return False
 
     @staticmethod
     def _answers_within(seconds: float) -> bool:

@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from . import camera
 from .adb import CREATE_NO_WINDOW
 from .paths import AVD_HOME, AVD_NAME, DATA, DOWNLOADS, EMULATOR_EXE, SCRCPY_HOME, SDK, android_env
 
@@ -167,9 +168,9 @@ AVD_SETTINGS = {
     "hw.gpu.mode": "auto",
     "hw.audioInput": "yes",
     "hw.audioOutput": "yes",
-    # The PC's webcam, as both of Android's cameras. Re-picked before every start (cameras()), so
-    # a webcam that was unplugged or added is noticed, and a PC without one gets none.
-    "hw.camera.back": "webcam0",
+    # The PC's webcam, as Android's front camera. Re-picked before every start (cameras()), so a
+    # webcam that was unplugged or added is noticed, and a PC without one gets none.
+    "hw.camera.back": "none",
     "hw.camera.front": "webcam0",
     "hw.sdCard": "no",
     "fastboot.forceColdBoot": "yes",  # see vm.py: snapshots are off
@@ -257,11 +258,18 @@ def parse_webcams(listing: str) -> list[tuple[str, str]]:
 
 
 def pick_cameras(webcams: list[tuple[str, str]]) -> dict[str, str]:
-    """Both of Android's cameras show the PC's first webcam: on a PC every camera faces the user, and
-    apps that want the "back" camera (QR code scanners, say) then get the good one too. None if
-    there's no webcam: the emulator would fail to open one that isn't there."""
-    label = webcams[0][1] if webcams else "none"
-    return {"hw.camera.front": label, "hw.camera.back": label}
+    """The PC's first webcam is Android's front camera, as a laptop's is on a Chromebook: it faces the
+    user, and video calls look for it. No back camera: the same webcam for both makes the emulator
+    offer only a back one, and a second webcam is often a closed laptop's (a black picture).
+    The Android Desktop Camera instead when it's installed (camera.py): it's that same webcam, with
+    its whole picture fitted to what Android shows. None if there's no webcam: the emulator would fail
+    to open one that isn't there, and without one the Android Desktop Camera is only black.
+    (hw.camera.*.orientation can't help with the picture being cropped: Android's camera driver in
+    the system image ignores it, see the README.)"""
+    physical = [label for name, label in webcams if not camera.is_ours(name)]
+    fitted = [label for name, label in webcams if camera.is_ours(name)]
+    front = (fitted or physical)[0] if physical else "none"
+    return {"hw.camera.front": front, "hw.camera.back": "none"}
 
 
 def cameras() -> dict[str, str]:
@@ -282,7 +290,10 @@ def configure_cameras() -> dict[str, str]:
         return {}
     settings = _read_config()
     picked = cameras()
-    if any(settings.get(k) != v for k, v in picked.items()):
+    stale = [k for k in ("hw.camera.front.orientation", "hw.camera.back.orientation") if k in settings]
+    if stale or any(settings.get(k) != v for k, v in picked.items()):
+        for k in stale:  # tried once; Android ignores them
+            del settings[k]
         settings.update(picked)
         _write_config(settings)
     return picked

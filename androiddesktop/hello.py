@@ -4,6 +4,7 @@ verify() asks Windows Hello (face, fingerprint or the Windows PIN) whether the p
 the signed-in user: Windows.Security.Credentials.UI.UserConsentVerifier, through its desktop interop
 (IUserConsentVerifierInterop.RequestVerificationForWindowAsync), so the prompt opens above the window
 it's about rather than somewhere on its own. It's WinRT called with plain ctypes: no extra packages.
+When we stop waiting for an answer, we close the dialog ourselves: canceling the request doesn't.
 
 The PIN store keeps Android's screen-lock PIN encrypted with DPAPI for the current Windows user, for
 unlocking Android with Windows Hello after a restart. Off unless the user turns it on. The PIN is
@@ -14,13 +15,17 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes as wt
 import hashlib
+import math
 import threading
 import time
 import uuid
 from typing import Callable
 
+import win32con
 import win32crypt
+import win32gui
 
+from .log import log
 from .paths import DATA
 
 # UserConsentVerifierAvailability / UserConsentVerificationResult
@@ -36,6 +41,7 @@ IID_ASYNC_INFO = "00000036-0000-0000-c000-000000000046"  # IAsyncInfo
 IID_ASYNC_OPERATION = "9fc2b0bb-e446-44e2-aa61-9cab8f636af2"  # IAsyncOperation<T>
 STARTED, COMPLETED = 0, 1  # AsyncStatus
 RPC_E_CHANGED_MODE = -2147417850
+DIALOG_CLASS = "Credential Dialog Xaml Host"  # the Windows Hello dialog, a window of CredentialUIBroker.exe
 
 combase = ctypes.windll.combase
 combase.WindowsCreateString.argtypes = [wt.LPCWSTR, ctypes.c_uint32, ctypes.POINTER(ctypes.c_void_p)]
@@ -113,13 +119,14 @@ def _factory(iid: str) -> ctypes.c_void_p:
         combase.WindowsDeleteString(name)
 
 
-def _result(operation: ctypes.c_void_p, timeout: float, wanted: Callable[[], bool] | None = None) -> int | None:
-    """Wait for an IAsyncOperation<enum> and return its value; None if it didn't complete in time or
-    stopped being wanted (it's canceled then), or ended without a result."""
+def _result(operation: ctypes.c_void_p, timeout: float | None,
+            wanted: Callable[[], bool] | None = None) -> int | None:
+    """Wait for an IAsyncOperation<enum> and return its value; None if it didn't complete in time
+    (timeout None: no limit) or stopped being wanted (it's canceled then), or ended without a result."""
     info = _query(operation, IID_ASYNC_INFO)
     try:
         status = ctypes.c_int(STARTED)
-        end = next_check = time.monotonic() + timeout
+        end = next_check = time.monotonic() + (math.inf if timeout is None else timeout)
         if wanted:
             next_check = time.monotonic() + 1
         while True:
@@ -163,13 +170,16 @@ def available() -> bool:
     return availability() == AVAILABLE
 
 
-def verify(hwnd: int, message: str, timeout: float = 120, wanted: Callable[[], bool] | None = None) -> int:
+def verify(hwnd: int, message: str, timeout: float | None = 120, wanted: Callable[[], bool] | None = None) -> int:
     """Ask Windows Hello whether the signed-in user is here, with the prompt above window hwnd.
     Returns VERIFIED, CANCELED or another UserConsentVerificationResult. Blocks; one at a time.
-    wanted: asked about once a second; the prompt goes away (CANCELED) once it says False."""
+    timeout: seconds to wait for an answer, None for no limit. wanted: asked about once a second.
+    When either gives up, the prompt goes away and it's CANCELED."""
     with _busy:
         interop = operation = ctypes.c_void_p()
         text = _hstring(message[:256])
+        before = _dialogs()
+        result = None
         try:
             interop = _factory(IID_INTEROP)
             operation = ctypes.c_void_p()
@@ -179,9 +189,58 @@ def verify(hwnd: int, message: str, timeout: float = 120, wanted: Callable[[], b
             result = _result(operation, timeout, wanted)
             return CANCELED if result is None else result
         finally:
+            if result is None and operation and not _close_dialog(hwnd, before):
+                log("Windows Hello: its dialog didn't close")
             _release(operation)
             _release(interop)
             combase.WindowsDeleteString(text)
+
+
+def _dialogs() -> set[int]:
+    """The Windows Hello dialogs on screen, ours or another app's."""
+    found = set()
+
+    def add(h: int, _) -> bool:
+        try:
+            if win32gui.GetClassName(h) == DIALOG_CLASS and win32gui.IsWindowVisible(h):
+                found.add(h)
+        except win32gui.error:  # gone meanwhile
+            pass
+        return True
+
+    win32gui.EnumWindows(add, None)
+    return found
+
+
+def _close_dialog(hwnd: int, before: set[int], wait: float = 3.0) -> bool:
+    """Close the dialog our request put above hwnd; True once it's gone (or never came).
+    Canceling the request (IAsyncInfo.Cancel) only marks our end of it canceled: CredentialUIBroker.exe,
+    which draws the dialog, isn't told, and leaves it up for the user to answer for nothing. Its window
+    is new since `before` and owned by hwnd (unowned for a moment as it opens). Windows refuses a
+    WM_CLOSE from us (access denied) but delivers SC_CLOSE, which the dialog takes as Cancel."""
+    start = time.monotonic()
+    asked: dict[int, float] = {}  # dialog -> when we last asked it to close
+    while True:
+        now = time.monotonic()
+        ours = set()
+        for h in _dialogs() - before:
+            try:
+                if win32gui.GetWindow(h, win32con.GW_OWNER) in (hwnd, 0):
+                    ours.add(h)
+            except win32gui.error:
+                pass
+        if not ours and (asked or now - start >= 1):  # closed; or none came up (it opens within a second)
+            return True
+        if now - start >= wait:
+            return False
+        for h in ours:
+            if now - asked.get(h, -math.inf) >= 1:  # again if it hasn't gone after a second (still opening)
+                asked[h] = now
+                try:
+                    win32gui.PostMessage(h, win32con.WM_SYSCOMMAND, win32con.SC_CLOSE, 0)
+                except win32gui.error:
+                    pass
+        time.sleep(0.05)
 
 
 # ---------------------------------------------------------------------- the remembered PIN

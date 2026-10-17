@@ -256,9 +256,11 @@ class Bridge:
             log(f"fingerprint: {op.owner} asks for a fingerprint, but no window of ours is open")
             return
         log(f"fingerprint: {op.owner} asks for a fingerprint (operation {op.seq}); asking Windows Hello")
-        # Asked about once a second: answered from the watcher's last look, which the scheduler's
-        # log lines keep current, rather than a dumpsys each time.
-        result = hello.verify(hwnd, what, wanted=lambda: self.current is not None and self.current.seq == op.seq)
+        # No time limit: Android's prompt waits for the user as long as the app does, so Windows Hello does too.
+        # "Still wanted?" is asked about once a second: answered from the watcher's last look, which the
+        # scheduler's log lines keep current, rather than a dumpsys each time.
+        result = hello.verify(hwnd, what, timeout=None, wanted=lambda: self.manager.vm.state == RUNNING
+                              and self.current is not None and self.current.seq == op.seq)
         if not self._still_asking(op):
             log("fingerprint: the prompt went away meanwhile")
             return
@@ -269,8 +271,9 @@ class Bridge:
         touch()
         log(f"fingerprint: Windows Hello verified; touched the sensor for {op.owner}")
 
-    @staticmethod
-    def _still_asking(op: Operation) -> bool:
+    def _still_asking(self, op: Operation) -> bool:
+        if self.manager.vm.state != RUNNING:  # Android stopped: nobody is asking any more
+            return False
         try:
             now, _ = fingerprint_state()
         except Exception:
@@ -291,8 +294,9 @@ class Bridge:
         adb.shell(f"input -d {display} keyevent 4", timeout=10)  # Back: the dialog's own cancel
         time.sleep(0.5)
         if self._still_asking(op):
-            # Behind Android's own lock screen (still up on the main display after a PIN unlock from
-            # the launcher) the dialog gets no keys. Android ends it when the app leaves the front.
+            # Behind Android's own lock screen (still up on the main display if the launcher's unlock
+            # couldn't enter the PIN there, see vm._dismiss_keyguard) the dialog gets no keys.
+            # Android ends it when the app leaves the front.
             log(f"fingerprint: Android's prompt for {op.owner} stays until the app gives up or leaves the front")
         else:
             log(f"fingerprint: canceled Android's prompt for {op.owner}")
