@@ -634,6 +634,10 @@ build an installer without publishing it.
 
 ## Known limitations
 
+What's missing and what's next is tracked in [ROADMAP.md](ROADMAP.md).
+
+- Until Android's lock screen is gone after a start (screen-lock PIN), and for apps with a plugin,
+  windows use scrcpy rather than the emulator's own displays.
 - From the eighth app window on (or with an Android started by an older version), apps show through
   scrcpy: video encoded in software inside the VM, so large windows of fast-moving games cost CPU
   there (`scrcpy_quality` trades sharpness for it).
