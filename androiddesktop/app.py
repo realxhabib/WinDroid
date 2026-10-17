@@ -1,6 +1,7 @@
 """Android Desktop: Android apps as independent Windows windows, backed by a headless Android VM.
 
     pythonw -m androiddesktop                  # the launcher
+    pythonw -m androiddesktop settings         # the launcher's settings page: every feature, its status
     pythonw -m androiddesktop open <package>   # open one app in its own window (Start menu shortcuts)
     pythonw -m androiddesktop boot             # start Android, nothing shown (for an AI agent's apps)
     pythonw -m androiddesktop stop             # close every app and shut Android down
@@ -34,10 +35,10 @@ import win32api  # noqa: E402
 import win32con  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from . import adb, biometrics, checks, emuview, ghost, hello, runtime, shortcuts  # noqa: E402
+from . import adb, biometrics, checks, emuview, features, ghost, hello, runtime, shortcuts  # noqa: E402
 from .catalog import Catalog  # noqa: E402
 from .log import log, log_uncaught  # noqa: E402
-from .manager import TRAY_OPEN, TRAY_QUIT, TRAY_STOP, WindowManager, send_to_agent  # noqa: E402
+from .manager import TRAY_OPEN, TRAY_QUIT, TRAY_SETTINGS, TRAY_STOP, WindowManager, send_to_agent  # noqa: E402
 from .paths import DATA, INSTANCE  # noqa: E402
 from .vm import LOCKED, OFF, RUNNING, VM  # noqa: E402
 
@@ -114,6 +115,61 @@ class Api:
         q = "".join(c for c in query if c.isalnum() or c in " -_.")
         self._agent.open("com.android.vending", ["-a", "android.intent.action.VIEW", "-d", f"market://search?q={q}"])
 
+    # Android Desktop's own settings page, the command palette and What's new (features.py)
+    def features(self) -> dict:
+        return self._agent.features.snapshot()
+
+    def android_settings(self) -> None:
+        self._agent.open("com.android.settings")
+
+    def restart_android(self) -> None:
+        self._agent.restart()
+
+    def run_checks(self) -> list[dict]:
+        return self._agent.features.run_checks()
+
+    def hello_unlock(self, on: bool, pin: str = "") -> str:
+        return self._agent.features.hello_unlock(bool(on), pin or "")
+
+    def screen_lock_settings(self) -> None:
+        self._agent.open("com.android.settings", ["-a", "android.settings.SECURITY_SETTINGS"])
+
+    def camera(self, command: str) -> str:
+        return self._agent.features.camera(command)
+
+    def connect_claude(self) -> str:
+        return self._agent.features.connect_claude()
+
+    def disconnect_claude(self) -> str:
+        return self._agent.features.disconnect_claude()
+
+    def copy_claude_desktop(self) -> str:
+        """Claude Desktop's config for our MCP server, now on the clipboard too."""
+        text = features.desktop_snippet(features.mcp_command())
+        winapi.copy_text(text)
+        return text
+
+    def set_plugin(self, name: str, on: bool) -> bool:
+        return self._agent.features.set_plugin(name, bool(on))
+
+    def set_app_windows(self, mode: str) -> bool:
+        return self._agent.features.set_app_windows(mode)
+
+    def set_quality(self, quality: str) -> bool:
+        return self._agent.features.set_quality(quality)
+
+    def check_updates(self) -> str:
+        return self._agent.features.check_updates()
+
+    def dismiss_whats_new(self) -> None:
+        self._agent.features.dismiss_whats_new()
+
+    def open_folder(self, which: str) -> None:
+        self._agent.features.open_folder(which)
+
+    def quit(self) -> None:
+        threading.Thread(target=self._agent.quit, daemon=True).start()
+
 
 class Agent:
     def __init__(self, show_launcher: bool) -> None:
@@ -122,6 +178,7 @@ class Agent:
         self.catalog = Catalog()
         self.manager = WindowManager(self.vm, self.catalog)
         self.fingerprint = biometrics.Bridge(self.manager, self._label, self._hello_anchor)
+        self.features = features.Features(self)
         self._hello_unlocking = threading.Lock()
         self.window: webview.Window | None = None
         self.loaded = False
@@ -134,6 +191,7 @@ class Agent:
         self._after_unlock: list[str] = []  # apps asked for while Android was locked
         self._icon_cache: dict[str, tuple[float, str]] = {}
         self._idle_since = time.monotonic()
+        self._page = ""  # a page of the launcher to show once it has loaded ("settings")
 
     # ------------------------------------------------------------------ startup
     def run(self, first_request: dict) -> None:
@@ -143,6 +201,7 @@ class Agent:
         self.manager.on_tray = self.tray
         self.manager.on_notice = self.notice
         self.manager.on_unlock = self.unlock_requested
+        self.manager.on_window_action = self.window_action
         self.manager.start()
         self.fingerprint.listeners.append(lambda: self.push(apps=False))
         self.fingerprint.on_notice = self.notice
@@ -200,6 +259,8 @@ class Agent:
     def _on_loaded(self) -> None:
         self.loaded = True
         self.push(apps=True)
+        if self._page:
+            self.show_page(self._page)
 
     def _on_closing(self) -> bool:
         if self.quitting:
@@ -216,6 +277,8 @@ class Agent:
             threading.Thread(target=self.vm.ensure_running, kwargs={"wait_for_unlock": False}, daemon=True).start()
         if request.get("show"):
             self.show_launcher()
+            if request.get("page"):
+                self.show_page(request["page"])
         if request.get("stop"):
             self.shutdown()
         if request.get("quit"):
@@ -224,6 +287,9 @@ class Agent:
     def tray(self, command: int) -> None:
         if command == TRAY_OPEN:
             self.show_launcher()
+        elif command == TRAY_SETTINGS:
+            self.show_launcher()
+            self.show_page("settings")
         elif command == TRAY_STOP:
             threading.Thread(target=self.shutdown, daemon=True).start()
         elif command == TRAY_QUIT:
@@ -314,10 +380,10 @@ class Agent:
 
     def setup_fingerprint(self) -> None:
         """"Set up fingerprint": Android's own enrollment in Settings; we put the finger down for it."""
-        if self.vm.state != RUNNING:
-            self.toast("Start Android first" if self.vm.state != LOCKED else "Unlock Android first")
+        if self.vm.state == LOCKED:
+            self.toast("Unlock Android first")
             return
-        self.fingerprint.enroll()
+        self.fingerprint.enroll()  # for 10 minutes: time enough for Android to start, if it's off
         self.open("com.android.settings", ["-a", "android.settings.FINGERPRINT_ENROLL"])
 
     def power(self) -> None:
@@ -325,6 +391,42 @@ class Agent:
             self.shutdown()
         elif self.vm.state == OFF:
             threading.Thread(target=self.vm.ensure_running, daemon=True).start()
+
+    def restart(self) -> None:
+        """Shut Android down (closing the app windows) and start it again."""
+        if self.vm.state not in (RUNNING, LOCKED):
+            return
+
+        def work() -> None:
+            log("restarting Android (asked in settings)")
+            self.shutdown()
+            self.vm.ensure_running()
+        threading.Thread(target=work, daemon=True, name="restart").start()
+
+    def window_action(self, win, action: str) -> None:
+        """An app window's "..." menu (appwindow.py): what it leaves to the agent, off the window thread
+        (shortcuts and adb take a moment)."""
+        threading.Thread(target=self._window_action, args=(win.app, action), daemon=True, name="window-menu").start()
+
+    def _window_action(self, app, action: str) -> None:
+        if action == "start":
+            added = shortcuts.toggle_start(app)
+            self.notice(f"{app.label} {'pinned to' if added else 'removed from'} Start")
+            self.push(apps=True)
+        elif action == "desktop":
+            shortcuts.desktop_shortcut(app)
+            self.notice(f"Added {app.label} to your desktop")
+        elif action == "info":
+            self.open("com.android.settings", ["-a", "android.settings.APPLICATION_DETAILS_SETTINGS",
+                                               "-d", f"package:{app.package}"])
+        elif action == "uninstall":  # the window asked "are you sure?" already
+            self.uninstall(app.package, confirmed=True)
+        elif action == "settings":
+            self.show_launcher()
+            self.show_page("settings")
+        elif action.startswith("plugin:"):
+            name, _, on = action[len("plugin:"):].partition("=")
+            self.features.set_plugin(name, on == "on")
 
     def shutdown(self) -> None:
         self.manager.close_all()
@@ -354,6 +456,19 @@ class Agent:
             threading.Thread(target=self.vm.ensure_running, daemon=True).start()
         else:
             threading.Thread(target=self._refresh_catalog, daemon=True).start()
+
+    def show_page(self, page: str) -> None:
+        """Open a page of the launcher: "settings" (its settings page) or "palette" (the command palette)."""
+        if page not in ("settings", "palette"):
+            return
+        if not (self.window and self.loaded):
+            self._page = page  # once it has loaded
+            return
+        self._page = ""
+        try:
+            self.window.evaluate_js(f"window.ui && ui.show({json.dumps(page)})")
+        except Exception as e:
+            log(f"show {page}: {e!r}")
 
     def hide_launcher(self) -> None:
         self.visible = False
@@ -541,11 +656,11 @@ class Agent:
                 log(f"install {name}: {result.stdout} {result.stderr}")
         self._refresh_catalog()
 
-    def uninstall(self, package: str) -> None:
+    def uninstall(self, package: str, confirmed: bool = False) -> None:
         app = self.catalog.get(package)
         if not app or app.system:
             return
-        if not self.window.create_confirmation_dialog("Uninstall", f"Uninstall {app.label} from Android?"):
+        if not confirmed and not self.window.create_confirmation_dialog("Uninstall", f"Uninstall {app.label} from Android?"):
             return
         if package in self.manager.windows:
             self.manager.call(self.manager.windows[package].close)
@@ -553,9 +668,9 @@ class Agent:
         if "Success" in result.stdout:
             path = shortcuts.start_path(app)
             path.unlink(missing_ok=True)
-            self.toast(f"Uninstalled {app.label}")
+            self.notice(f"Uninstalled {app.label}")  # the launcher may be closed: from a window's menu
         else:
-            self.toast(f"Couldn't uninstall {app.label}")
+            self.notice(f"Couldn't uninstall {app.label}")
         self._refresh_catalog()
 
     # ------------------------------------------------------------------ housekeeping
@@ -614,6 +729,8 @@ def main() -> None:
             request["adopt"] = int(args[3])
     elif command in ("boot", "stop", "quit"):
         request = {command: True}
+    elif command == "settings":
+        request = {"show": True, "page": "settings"}
     else:
         request = {"show": True}
     if send_to_agent(request):

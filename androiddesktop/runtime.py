@@ -187,6 +187,11 @@ def _read_config() -> dict[str, str]:
     return existing
 
 
+def vm_config() -> dict[str, str]:
+    """The AVD's settings as they stand: what Android runs with (or starts with next)."""
+    return _read_config()
+
+
 def _write_config(settings: dict[str, str]) -> None:
     avd_config().write_text("".join(f"{k}={v}\n" for k, v in settings.items()), encoding="utf-8")
 
@@ -264,15 +269,20 @@ def pick_cameras(webcams: list[tuple[str, str]]) -> dict[str, str]:
     return {"hw.camera.front": label, "hw.camera.back": label}
 
 
-def cameras() -> dict[str, str]:
-    """The camera settings for the webcams plugged in right now (none if we can't tell)."""
+def webcams() -> list[tuple[str, str]]:
+    """The webcams plugged in right now, as the emulator sees them (none if we can't tell)."""
     try:
         out = subprocess.run([str(EMULATOR_EXE), "-webcam-list"], capture_output=True, text=True,
                              encoding="utf-8", errors="replace", timeout=30, env=android_env(),
                              creationflags=CREATE_NO_WINDOW).stdout
     except (OSError, subprocess.TimeoutExpired):
         out = ""
-    return pick_cameras(parse_webcams(out))
+    return parse_webcams(out)
+
+
+def cameras() -> dict[str, str]:
+    """The camera settings for the webcams plugged in right now (none if we can't tell)."""
+    return pick_cameras(webcams())
 
 
 def configure_cameras() -> dict[str, str]:

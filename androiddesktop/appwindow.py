@@ -5,6 +5,9 @@ app's own top color, so it reads as part of the app rather than a Windows title 
 native frame underneath: rounded corners, shadow, resize edges, Aero Snap and the Windows 11 Snap
 Layouts flyout on the maximize button.
 
+The bar's "..." button holds what else there is for the app: Pin to Start, a desktop shortcut,
+Android's App info, Uninstall, and the app's plugins and Send to iPhone or iPad where there are those.
+
 Below the bar sits the app itself, on an Android display made just for this app that follows the
 window's size, so resizing the window resizes the app, which re-lays itself out like a desktop app.
 That display is one of the emulator's own, its frames drawn straight onto a child window of ours
@@ -65,8 +68,9 @@ DEFAULT_SIZE_DIP = (412, 860)
 MIN_SIZE_DIP = (280, 220)
 
 GLYPHS = {"back": "", "pin": "", "pinned": "", "min": "", "max": "",
-          "restore": "", "close": ""}
-TOOLTIPS = {"back": "Back", "pin": "Keep on top", "min": "Minimize", "max": "Maximize", "close": "Close"}
+          "restore": "", "close": "", "more": ""}
+TOOLTIPS = {"back": "Back", "pin": "Keep on top", "min": "Minimize", "max": "Maximize", "close": "Close",
+            "more": "More"}
 CLOSE_RED = (196, 43, 28)
 _LAUNCH_LOCK = threading.Lock()
 
@@ -104,6 +108,28 @@ def scrcpy_args(package: str, size: tuple[int, int], density: int, pos: tuple[in
             "--mouse-bind=b+b+:++++",
             "--video-codec=h264", f"--video-bit-rate={bit_rate}", f"--max-fps={fps}", *smaller,
             "--background-color=%02x%02x%02x" % bg[:3], "--no-terminal-title"]
+
+
+def menu_items(app: App, in_start: bool, pinned: bool, plugins: list[dict],
+               phones: list[tuple[str, str]] | None) -> list:
+    """The bar's "..." menu: (action, label, checked) for each item, (label, [items]) for a submenu,
+    None for a separator. plugins: features.plugins_for(); phones: the iPhone and iPad hub's choices
+    for the app, None without the hub."""
+    items: list = []
+    if phones is not None:
+        items += [("Send to iPhone or iPad", [(f"send:{action}", label, False) for action, label in phones]), None]
+    for p in plugins:
+        items.append((f"plugin:{p['name']}={'off' if p['on'] else 'on'}", p["title"], p["on"]))
+    if plugins:
+        items.append(None)
+    items += [("pin", "Keep on top", pinned),
+              ("start", "Remove from Start" if in_start else "Pin to Start", False),
+              ("desktop", "Add a desktop shortcut", False),
+              ("info", "App info", False)]
+    if not app.system:
+        items.append(("uninstall", f"Uninstall {app.label}...", False))
+    items += [None, ("settings", "Android Desktop settings", False)]
+    return items
 
 
 def parse_display_id(line: str) -> int | None:
@@ -173,7 +199,7 @@ class AppWindow:
         cap, small = round(CAPTION_BTN_DIP * s), round(SMALL_BTN_DIP * s)
         out = [("back", 0, small)]
         x = width
-        for name, w in (("close", cap), ("max", cap), ("min", cap), ("pin", small)):
+        for name, w in (("close", cap), ("max", cap), ("min", cap), ("pin", small), ("more", small)):
             out.append((name, x - w, x))
             x -= w
         return out
@@ -732,7 +758,60 @@ class AppWindow:
             self.retry()
         elif name == "unlock":
             self.manager.on_unlock(self)
+        elif name == "more":
+            self._repaint_bar()
+            self._more_menu()
+            self.hover = None
         self._repaint_bar()
+
+    def _more_menu(self) -> None:
+        """The "..." button: everything else there is for this app (menu_items)."""
+        from . import features, shortcuts  # features.py imports this module
+        hub = getattr(self.manager, "remote", None)  # iPhone & iPad, in builds that have it
+        try:
+            in_start = shortcuts.in_start(self.app)
+        except Exception:
+            in_start = False
+        items = menu_items(self.app, in_start, self.pinned,
+                           features.plugins_for(getattr(self.manager, "plugins", None), self.app.package),
+                           hub.choices(self.app.package) if hub else None)
+        actions: list[str] = []
+
+        def add(menu: int, entries: list) -> None:
+            for item in entries:
+                if item is None:
+                    win32gui.AppendMenu(menu, win32con.MF_SEPARATOR, 0, "")
+                elif isinstance(item[1], list):
+                    sub = win32gui.CreatePopupMenu()
+                    add(sub, item[1])
+                    win32gui.AppendMenu(menu, win32con.MF_POPUP, sub, item[0].replace("&", "&&"))
+                else:
+                    action, label, checked = item
+                    actions.append(action)
+                    flags = win32con.MF_STRING | (win32con.MF_CHECKED if checked else 0)
+                    win32gui.AppendMenu(menu, flags, 100 + len(actions) - 1, label.replace("&", "&&"))
+        menu = win32gui.CreatePopupMenu()
+        add(menu, items)
+        x0 = next(x for name, x, _ in self._buttons(self._client()[0]) if name == "more")
+        x, y = win32gui.ClientToScreen(self.hwnd, (x0, self.bar))
+        cmd = win32gui.TrackPopupMenu(menu, win32con.TPM_RETURNCMD | win32con.TPM_LEFTALIGN | win32con.TPM_TOPALIGN,
+                                      x, y, 0, self.hwnd, None)
+        win32gui.DestroyMenu(menu)  # and its submenus
+        if cmd and 0 <= cmd - 100 < len(actions):
+            self._menu_action(actions[cmd - 100], hub)
+
+    def _menu_action(self, action: str, hub=None) -> None:
+        if action == "pin":
+            self._act("pin")
+        elif action.startswith("send:") and hub:
+            hub.window_choice(self, action[len("send:"):])
+        elif action == "uninstall":
+            answer = win32api.MessageBox(self.hwnd, f"Uninstall {self.app.label} from Android? Its data goes too.",
+                                         "Uninstall", win32con.MB_OKCANCEL | win32con.MB_ICONWARNING)
+            if answer == win32con.IDOK:
+                self.manager.on_window_action(self, "uninstall")
+        else:
+            self.manager.on_window_action(self, action)
 
     def _set_hover(self, name: str | None) -> None:
         if name != self.hover:

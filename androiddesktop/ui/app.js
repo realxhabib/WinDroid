@@ -68,9 +68,10 @@ function renderStatus() {
 function renderSetup() {
   const s = state.setup;
   const showSetup = !s.installed;
+  const inHub = !showSetup && window.hub && hub.isOpen(); // the settings page (hub.js) stands in for both
   $("setup").hidden = !showSetup;
-  $("home").hidden = showSetup;
-  $("dock").hidden = showSetup;
+  $("home").hidden = showSetup || inHub;
+  $("dock").hidden = showSetup || inHub;
   $("setup-go").hidden = !!s.busy;
   $("setup-progress").hidden = !s.busy;
   $("setup-fill").style.width = `${Math.round((s.progress || 0) * 100)}%`;
@@ -215,7 +216,9 @@ window.ui = {
     renderUnlock();
     renderHello();
     renderGrid();
+    if (window.hub) hub.update(patch);
   },
+  show: (page) => window.hub && hub.show(page), // "settings" or "palette", from Python
   toast,
 };
 
@@ -269,6 +272,7 @@ $("search").addEventListener("keydown", (e) => {
   else if (e.key === "ArrowUp" || e.key === "ArrowLeft") { state.sel = Math.max(state.sel - (e.key === "ArrowUp" ? 4 : 1), 0); renderGrid(); e.preventDefault(); }
 });
 document.addEventListener("keydown", (e) => {
+  if (window.hub && hub.key(e)) return; // Ctrl+K, Ctrl+, and the keys of the palette and settings page
   const input = $("search");
   if (e.key === "Escape") {
     if (!$("menu").hidden) hideMenu();
@@ -278,7 +282,7 @@ document.addEventListener("keydown", (e) => {
   }
   // Type anywhere to search, like the Start menu (or, while Android is locked, to enter the PIN).
   if (!(document.activeElement instanceof HTMLInputElement) && e.key.length === 1 && !e.ctrlKey && !e.altKey
-      && !e.metaKey && $("setup").hidden) {
+      && !e.metaKey && $("setup").hidden && !$("home").hidden) {
     ($("unlock").hidden ? input : $("pin")).focus();
   }
 });
@@ -291,7 +295,9 @@ $("minimize").addEventListener("click", () => api().minimize());
 $("power").addEventListener("click", () => api().power());
 $("play").addEventListener("click", () => api().open_app("com.android.vending"));
 $("apk").addEventListener("click", () => api().install_apk());
-$("settings").addEventListener("click", () => api().open_app("com.android.settings"));
+$("settings").addEventListener("click", () => hub.open());
+$("palette-open").addEventListener("click", () => hub.palette());
+$("search-actions").addEventListener("click", () => hub.palette(state.query));
 $("setup-go").addEventListener("click", () => api().setup());
 $("search-play").addEventListener("click", () => api().search_play(state.query));
 
