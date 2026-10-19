@@ -261,11 +261,11 @@ class Phones(unittest.TestCase):
         self.assertIsNone(features.phones_card(None))
         hub = types.SimpleNamespace(snapshot=lambda: {
             "enabled": True, "problem": "", "approvals": [{"name": "iPad"}],
-            "devices": [{"group": "g1", "name": "Sam's iPhone", "online": True, "apps": ["Clock"]},
+            "devices": [{"group": "g1", "name": "Habib's iPhone", "online": True, "apps": ["Clock"]},
                         {"group": "g2", "name": "", "online": False, "apps": []}]})
         card = features.phones_card(hub)
         self.assertEqual(card["asking"], 1)
-        self.assertEqual(card["devices"][0], {"name": "Sam's iPhone", "online": True, "apps": ["Clock"]})
+        self.assertEqual(card["devices"][0], {"name": "Habib's iPhone", "online": True, "apps": ["Clock"]})
         self.assertEqual(card["devices"][1]["name"], "iPhone or iPad")
 
 
@@ -633,9 +633,9 @@ class WindowMenu(unittest.TestCase):
     def test_plugins_and_phones(self):
         app = App("co.hinge.app", ".Main", "Hinge", False, 0)
         plugins = [{"name": "hinge", "title": "Hinge Matcher", "packages": ["co.hinge.app"], "on": True}]
-        phones = [("send:group1", "Sam's iPhone"), ("pair", "Pair an iPhone or iPad...")]
+        phones = [("send:group1", "Habib's iPhone"), ("pair", "Pair an iPhone or iPad...")]
         items = appwindow.menu_items(app, False, False, plugins, phones)
-        self.assertEqual(items[0], ("Send to iPhone or iPad", [("send:send:group1", "Sam's iPhone", False),
+        self.assertEqual(items[0], ("Send to iPhone or iPad", [("send:send:group1", "Habib's iPhone", False),
                                                                ("send:pair", "Pair an iPhone or iPad...", False)]))
         self.assertIsNone(items[1])
         self.assertEqual(items[2], ("plugin:hinge=off", "Hinge Matcher", True))
