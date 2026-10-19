@@ -690,3 +690,8 @@ What's missing and what's next is tracked in [ROADMAP.md](ROADMAP.md).
 - Sound stays on the PC. Sending one app's sound to the device looks feasible: Android 13+ can capture
   a single app's playback (AudioPlaybackCapture by app; scrcpy has a playback source), which could go
   to Safari as Opus or AAC beside the video. Not built yet.
+
+## License
+
+MIT; see [LICENSE](LICENSE). Android, the emulator, scrcpy and the other tools WinDroid downloads on
+first run keep their own licenses.

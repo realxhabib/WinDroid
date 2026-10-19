@@ -195,7 +195,7 @@ class PairingTests(unittest.TestCase):
         self.assertEqual(make(self.dir).devices(), [])
 
     def test_names_cleaned(self):
-        self.assertEqual(pairing.clean_name("  iPhone\x00\n  of\tDylan  "), "iPhone of Dylan")
+        self.assertEqual(pairing.clean_name("  iPhone\x00\n  of\tHabib  "), "iPhone of Habib")
         self.assertEqual(pairing.clean_name(""), pairing.DEFAULT_NAME)
         self.assertEqual(len(pairing.clean_name("x" * 200)), 40)
 
