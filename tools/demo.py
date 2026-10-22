@@ -49,7 +49,7 @@ from androiddesktop.paths import LOGS  # noqa: E402
 START = "python tools/demo.py android" if CLEAN else "start WinDroid from the Start menu"
 # Apps that show nothing personal by default. Check each one before filming anyway.
 FLEET = ["com.google.android.deskclock", "com.google.android.apps.maps", "com.android.settings",
-         "com.android.chrome", "com.google.android.calendar"]
+         "com.android.chrome", "com.google.android.dialer"]
 SNAP = ["com.google.android.apps.maps", "com.android.settings"]
 OPENED = Path(tempfile.gettempdir()) / "windroid-demo-windows.json"  # what `close` closes
 FPS = 60
