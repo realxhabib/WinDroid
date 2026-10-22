@@ -45,6 +45,7 @@ Status: `todo`, `doing`, `blocked` (waiting on something outside the code), `ide
 | idea | Names: the product is WinDroid, the Python package and data folder are still `androiddesktop` / `AndroidDesktop` | Renaming the data folder needs a migration; the package name is internal. |
 | todo | Hinge Matcher and the terms of dating apps | Off by default now, and it never likes, sends or skips by itself. Keep it out of launch posts. |
 | todo | License notices for the libraries inside the installer | pywin32, Pillow, pywebview, pythonnet, cryptography and others are bundled; several of their licenses ask for their notices to ship with them. Collect them into a THIRD-PARTY-NOTICES file in the installer. |
+| todo | Launch film | Script and shot list: https://claude.ai/artifact/J8VydqXW5gi4uy4kVmcrzc. Demo mode (`tools/demo.py`) films the screen takes on a demo Android with no Google account; `agentrec.py` records the agent's hidden screens for the replay. Next: film the takes, then build the edit in Remotion (1920 × 1080, 60 fps, 46 s). |
 
 ## Next
 

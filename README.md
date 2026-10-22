@@ -584,6 +584,12 @@ launcher in the Start menu itself (as **WinDroid**) and never updates itself; it
 - `python tools/agent_demo.py` runs the agent demo through the MCP server, the way Claude Code
   talks to it: Clock starts hidden, gets a 10-minute timer, the time left is read back, no window
   appears on the PC until `show_to_user` puts Clock in one, timer still running.
+- `python tools/demo.py` is demo mode, for filming: `fleet` opens apps one by one, each gliding into
+  a row of windows; `snap` glides two side by side, so the apps re-lay themselves out; `agent` records
+  the hidden apps an AI agent works in (`agentrec.py`: the screen after every step, and where it
+  tapped; typed text as its length only, secure screens never); `close` closes what it opened.
+  `android` starts a demo Android of its own, with no Google account, so nothing of yours gets into
+  the video; `--clean` runs the other commands on it.
 - `ANDROIDDESKTOP_SERIAL=emulator-5620` (any adb serial) points everything at another Android, such
   as a test emulator, which then gets an agent process and app list of its own, apart from yours. An
   emulator serial's port is where WinDroid starts its Android, if it has to.
@@ -591,6 +597,8 @@ launcher in the Start menu itself (as **WinDroid**) and never updates itself; it
   `%LOCALAPPDATA%\AndroidDesktop`. With both set, you get a separate WinDroid, with its own Android,
   that never touches yours: handy for trying an installed build. (The uninstaller's "delete Android"
   question then means that folder too.)
+- `ANDROIDDESKTOP_RUNTIME=<folder>` takes the Android runtime (emulator, system image, adb, scrcpy)
+  from another data folder, so a separate instance needn't download its own 7 GB.
 - `ANDROIDDESKTOP_REMOTE_LOOPBACK=1` also serves the iPhone & iPad pages on http://127.0.0.1:47821,
   which browsers treat as secure, so the web app (`androiddesktop/remote/web`) can be tried with
   WebCodecs in a desktop browser without a certificate. The unit tests include the web app's crypto

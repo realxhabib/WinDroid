@@ -52,6 +52,16 @@ class Paths(unittest.TestCase):
     def test_serial_that_isnt_an_emulator(self):
         self.assertEqual(self.paths(ANDROIDDESKTOP_SERIAL="192.168.1.5:5555")[3], "5584")
 
+    def test_shared_runtime(self):
+        """The demo Android (tools/demo.py): yours runs the emulator, its Android is its own."""
+        code = "from androiddesktop import paths as p; print(p.SDK, p.SCRCPY_HOME, p.AVD_HOME, p.STATE, sep='|')"
+        clean = {k: v for k, v in os.environ.items() if not k.startswith("ANDROIDDESKTOP_")}
+        env = {**clean, "ANDROIDDESKTOP_DATA": r"C:\yours\demo", "ANDROIDDESKTOP_RUNTIME": r"C:\yours"}
+        out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True,
+                             cwd=Path(__file__).resolve().parents[1], check=True).stdout
+        self.assertEqual(out.strip().split("|"), [r"C:\yours\sdk", r"C:\yours\scrcpy", r"C:\yours\demo\avd",
+                                                  r"C:\yours\demo\state.json"])
+
 
 def port_free(port: int) -> bool:
     with socket.socket() as s:
@@ -70,7 +80,7 @@ class LauncherPage(unittest.TestCase):
     def test_port_is_ours_and_stable(self):
         with mock.patch.object(app, "INSTANCE", ""):
             self.assertEqual(app.ui_port(), app.UI_PORT)
-        with mock.patch.object(app, "INSTANCE", ".emulator-5640"):
+        with mock.patch.object(app, "INSTANCE", ".emulator-5662"):  # not the demo Android's (tools/demo.py)
             other = app.ui_port()
             self.assertNotIn(other, (app.UI_PORT, 42001))
             self.assertEqual(app.ui_port(), other)

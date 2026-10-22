@@ -23,7 +23,7 @@ import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from . import adb, runtime, uitree
+from . import adb, agentrec, runtime, uitree
 from .agenthelper import DEVICE_JAR, Helper, HelperError
 from .catalog import App, parse_list
 from .log import agent_log
@@ -123,6 +123,7 @@ class Session:
     ghost: int | None  # our hidden display; None once the app is in a window the user sees
     size: tuple[int, int] = SIZE
     windows: list[uitree.Window] = field(default_factory=list)  # as last read
+    recorder: agentrec.Recorder | None = None  # a demo is recording this hidden session (agentrec.py)
 
     @property
     def hidden(self) -> bool:
@@ -235,7 +236,27 @@ class Sessions:
         self.sessions[session.id] = session
         how = "joined in the user's window" if open_in else "started in a window" if visible else "started hidden"
         agent_log(f"{session.id}: {app.package} {how} on display {session.display}")
+        folder = agentrec.target() if session.hidden else None
+        if folder:
+            try:
+                session.recorder = agentrec.Recorder(folder, session.id, session.package, session.label, session.size)
+                agent_log(f"{session.id}: recording for a demo in {session.recorder.dir}")
+            except OSError as e:
+                agent_log(f"{session.id}: can't record: {e}")
+        self._record(session, "open")
         return session
+
+    def _record(self, s: Session, what: str, **details) -> None:
+        """A step of a session a demo is recording: what the agent did and the hidden screen after it.
+        Never lets a recording problem get in the agent's way."""
+        if s.recorder is None or not s.hidden:
+            return
+        try:
+            secure = s.display in parse_secure_displays(adb.shell(SECURE_QUERY, timeout=10))
+            image = None if secure else self.helper.call("shot", display=s.ghost, format="jpeg", quality=90)
+            s.recorder.step(what, image, secure=secure, **details)
+        except Exception as e:
+            agent_log(f"{s.id}: recording {what}: {e!r}")
 
     def _new_id(self, app: App) -> str:
         self._count += 1
@@ -290,6 +311,7 @@ class Sessions:
         if not s.hidden:
             agent_log(f"{sid}: ended; {s.package} stays in the user's window")
             return f"Session {sid} ended. {s.label} stays open in the user's window."
+        self._record(s, "end")
         for root in parse_root_tasks(adb.shell("cmd activity stack list", timeout=10), s.ghost):
             adb.shell(f"am stack remove {root}", timeout=10)
         self._release(s.ghost)
@@ -428,6 +450,7 @@ class Sessions:
         mark = self._mark(s)
         self._input(s, f"tap {x} {y}")
         self._settle(s.display, mark)
+        self._record(s, "tap", x=x, y=y, target=what)
         return f"Tapped {what} at ({x}, {y})."
 
     def type_text(self, sid: str, text: str, element: int | None = None, submit: bool = False) -> str:
@@ -453,6 +476,7 @@ class Sessions:
         if submit:
             self._enter(s, target)
         self._settle(s.display, mark)
+        self._record(s, "type", length=len(text), target=where, submit=submit)
         return f"Typed {len(text)} characters into {where}{' and pressed Enter' if submit else ''}."
 
     def _type_keys(self, s: Session, text: str) -> bool:
@@ -486,6 +510,7 @@ class Sessions:
         else:
             self._input(s, f"keyevent {KEYS[key]}")
         self._settle(s.display, mark)
+        self._record(s, "press", key=key)
         return f"Pressed {key}."
 
     def scroll(self, sid: str, direction: str, element: int | None = None) -> str:
@@ -502,6 +527,7 @@ class Sessions:
         mark = self._mark(s)
         self._input(s, f"swipe {x1} {y1} {x2} {y2} 400")
         self._settle(s.display, mark)
+        self._record(s, "scroll", direction=direction, x1=x1, y1=y1, x2=x2, y2=y2)
         return f"Scrolled {direction}{' in ' + describe(node) if node else ''}."
 
     # ------------------------------------------------------------------ handing over
@@ -510,6 +536,8 @@ class Sessions:
         if not s.hidden:
             return f"{s.label} is already in a window on the user's desktop."
         ghost = s.ghost
+        self._record(s, "show")
+        s.recorder = None
         agent_log(f"{sid}: showing {s.package} to the user")
         ask_agent({"open": s.package, "adopt": ghost}, ["open", s.package, "--adopt", str(ghost)])
         task = self._wait_for_window(s.package, {ghost}, 60)

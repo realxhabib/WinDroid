@@ -10,10 +10,13 @@ from pathlib import Path
 # ANDROIDDESKTOP_SERIAL as well, it's an instance of its own, with its own Android (see SERIAL).
 DATA = Path(os.environ.get("ANDROIDDESKTOP_DATA") or
             Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "AndroidDesktop")
+# ANDROIDDESKTOP_RUNTIME: another data folder whose Android runtime (the emulator, its system image, adb,
+# scrcpy) to use, so a separate instance needn't download its own 7 GB. Its Android stays its own.
+RUNTIME = Path(os.environ.get("ANDROIDDESKTOP_RUNTIME") or DATA)
 DOWNLOADS = DATA / "downloads"
-SDK = DATA / "sdk"
+SDK = RUNTIME / "sdk"
 AVD_HOME = DATA / "avd"
-SCRCPY_HOME = DATA / "scrcpy"
+SCRCPY_HOME = RUNTIME / "scrcpy"
 ICONS = DATA / "icons"
 LOGS = DATA / "logs"
 STATE = DATA / "state.json"
