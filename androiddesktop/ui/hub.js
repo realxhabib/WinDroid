@@ -232,7 +232,9 @@ const hub = (() => {
       toggle(p.on, (on) => setPlugin(p, on), false, p.title)));
     return card("plugins", "\uEA86", ["#4ce0d2", "#2c8cff"], "Plugins", "Companions for particular apps",
       tag(`${f.plugins.filter((p) => p.on).length} on`, f.plugins.some((p) => p.on) ? "ok" : ""),
-      rows.length ? h("div", { class: "rows" }, rows) : h("p", { class: "card-text", text: "No plugins in this version." }));
+      rows.length ? h("div", { class: "rows" }, rows)
+        : h("p", { class: "card-text", text: "No plugins installed. A plugin is a folder: put it in the plugins folder and restart WinDroid." }),
+      h("div", { class: "card-actions" }, button("Plugins folder", "", () => api().open_folder("plugins"))));
   }
 
   async function setPlugin(p, on) {

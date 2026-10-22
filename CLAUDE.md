@@ -38,6 +38,8 @@ backlog**: read it before starting, and update it (move items to Shipped, add ne
   - Never log PINs, API keys or the Hinge config.
   - No real people's names or screenshots in the repo (test fixtures included); delete captures of
     the user's apps after use.
-- **Hinge Matcher** fills in text for the user to send; it never likes, sends or skips by itself. Keep it so.
+- **Plugins live apart from WinDroid**, in `%LOCALAPPDATA%\AndroidDesktop\plugins`; WinDroid ships none.
+  Hinge Matcher is in its own repository (`C:\Users\dylan\windroid-plugins`, public on GitHub as
+  WinDroidPlugins), with its own CLAUDE.md and rules. Keep it out of WinDroid and its launch posts.
 - **Fewer chats.** The user prefers work done in one chat. For parallel work use git worktrees, merge
   with tests, and track ideas in ROADMAP.md rather than proposing many new sessions.

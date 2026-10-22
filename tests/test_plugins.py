@@ -1,10 +1,15 @@
 """The plugin host, typing (keys.py) and overlay placement, without Android or real windows."""
+import os
+import sys
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from PIL import Image
 
 from androiddesktop import keys, overlay
+from androiddesktop import plugins
 from androiddesktop.plugins import Geometry, Plugin, PluginHost
 
 
@@ -145,7 +150,7 @@ class FakeWin:
 
 class Host(unittest.TestCase):
     def setUp(self):
-        self.host = PluginHost(mock.Mock(), modules=())
+        self.host = PluginHost(mock.Mock(), modules=(), folders=[])
         self.host.classes = [Recorder]
         patches = [mock.patch("androiddesktop.plugins.AppHandle.geometry", return_value=None),
                    mock.patch.object(PluginHost, "_watch_foreground"),
@@ -191,6 +196,71 @@ class Host(unittest.TestCase):
         self.host.shown(FakeWin("com.example", 5))
         self.host.moved(FakeWin("com.example", 5))
         self.assertEqual(self.host.instances[5][1].calls, ["start", "geometry", "geometry"])
+
+
+
+NOTES = """from androiddesktop.plugins import Plugin
+from .words import WORD
+
+
+class Notes(Plugin):
+    name = "notes"
+    title = "Notes " + WORD
+    packages = frozenset({"com.example.notes"})
+
+
+PLUGIN = Notes
+"""
+
+
+class Installed(unittest.TestCase):
+    """Plugins installed apart from WinDroid: a folder each in AndroidDesktop's plugins folder."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+        self.installed = self.root / "plugins"
+        for p in [mock.patch.object(plugins, "PLUGINS", self.installed), mock.patch.object(plugins, "log"),
+                  mock.patch.dict(os.environ, {"ANDROIDDESKTOP_PLUGINS": ""})]:
+            p.start()
+            self.addCleanup(p.stop)
+        self.addCleanup(lambda: [sys.modules.pop(m) for m in list(sys.modules) if m.startswith("windroid_plugins.")])
+
+    def plugin(self, root, folder, init, files=None):
+        (root / folder).mkdir(parents=True)
+        (root / folder / "__init__.py").write_text(init, encoding="utf-8")
+        for name, body in (files or {}).items():
+            (root / folder / name).write_text(body, encoding="utf-8")
+
+    def test_none_installed(self):
+        self.assertEqual(plugins.plugin_folders(), [])
+        self.assertEqual(PluginHost(mock.Mock())._load(), [])
+
+    def test_loads_a_plugin_package_with_its_own_modules(self):
+        self.plugin(self.installed, "notes", NOTES, {"words.py": 'WORD = "helper"'})
+        (self.installed / "not-a-plugin").mkdir()
+        (self.installed / "data-only").mkdir()
+        (self.installed / "data-only" / "config.json").write_text("{}", encoding="utf-8")
+        classes = PluginHost(mock.Mock())._load()
+        self.assertEqual([(c.name, c.title, c.__module__) for c in classes],
+                         [("notes", "Notes helper", "windroid_plugins.notes")])
+
+    def test_a_broken_plugin_is_skipped(self):
+        self.plugin(self.installed, "broken", "raise RuntimeError('not today')")
+        self.plugin(self.installed, "notes", NOTES, {"words.py": 'WORD = "ok"'})
+        classes = PluginHost(mock.Mock())._load()
+        self.assertEqual([c.name for c in classes], ["notes"])
+        self.assertNotIn("windroid_plugins.broken", sys.modules)
+        self.assertIn("can't load", plugins.log.call_args_list[0].args[0])
+
+    def test_a_checkout_being_worked_on_comes_first(self):
+        checkout = self.root / "checkout"
+        self.plugin(self.installed, "notes", NOTES, {"words.py": 'WORD = "installed"'})
+        self.plugin(checkout, "notes", NOTES, {"words.py": 'WORD = "checkout"'})
+        with mock.patch.dict(os.environ, {"ANDROIDDESKTOP_PLUGINS": str(checkout)}):
+            self.assertEqual(plugins.plugin_folders(), [checkout / "notes"])
+            self.assertEqual(PluginHost(mock.Mock())._load()[0].title, "Notes checkout")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,12 @@ done, move it to **Shipped** with the version; when an idea turns into work, giv
 
 Status: `todo`, `doing`, `blocked` (waiting on something outside the code), `idea` (not decided yet).
 
+## Shipped in 0.1.2
+
+- Plugins are installed apart from WinDroid: folders in `%LOCALAPPDATA%\AndroidDesktop\plugins`, loaded
+  when it starts (Settings > Plugins has a **Plugins folder** button). WinDroid ships with none.
+- Hinge Matcher moved to its own repository, WinDroidPlugins (`C:\Users\dylan\windroid-plugins`).
+
 ## Shipped in 0.1.1
 
 - MIT license (`LICENSE`).
@@ -35,7 +41,6 @@ Status: `todo`, `doing`, `blocked` (waiting on something outside the code), `ide
 | Status | Gap | Notes |
 |---|---|---|
 | todo | Smooth (emulator-display) windows only start once Android's lock screen is gone | Until then windows use scrcpy. Making emulator displays draw over the lock screen (an "always unlocked" display flag) would make them smooth right after boot. |
-| todo | Hinge Matcher needs scrcpy windows | It reads the app from scrcpy's window and pastes through scrcpy's keyboard. Port it to emulator displays: frames from the display, text through Android's clipboard. |
 | todo | Webcam video mode shows only the middle 75% of the picture | Photo mode is fine. The fix is in the virtual camera; installing it needs administrator rights (the prompt was declined). |
 | todo | Send to iPhone/iPad untested on a real device | Tested end to end with a desktop browser standing in for the phone. |
 | todo | Clipboard, sound, tray menu, Install APK, uninstall, Snap Layouts flyout never tested by hand | Run through each once and fix what's broken. |
@@ -43,9 +48,8 @@ Status: `todo`, `doing`, `blocked` (waiting on something outside the code), `ide
 | todo | The installer isn't code-signed | SmartScreen warns on first run. Needs a code-signing certificate. |
 | todo | Dock labels in the launcher wrap onto two lines | Cosmetic. |
 | idea | Names: the product is WinDroid, the Python package and data folder are still `androiddesktop` / `AndroidDesktop` | Renaming the data folder needs a migration; the package name is internal. |
-| todo | Hinge Matcher and the terms of dating apps | Off by default now, and it never likes, sends or skips by itself. Keep it out of launch posts. |
 | todo | License notices for the libraries inside the installer | pywin32, Pillow, pywebview, pythonnet, cryptography and others are bundled; several of their licenses ask for their notices to ship with them. Collect them into a THIRD-PARTY-NOTICES file in the installer. |
-| todo | Launch film | Rendered locally (`film/`, kept out of git; posted by hand), 49 s, 1080p60, no narration: two halves: for you, every app in its own window (an emulator's phone dissolves into app windows); for your AI, headless (Claude uses Maps with no window, then hands it over). Real captures from the demo Android, the agent's hidden Maps session replayed, a score made in code. Page: https://claude.ai/artifact/J8VydqXW5gi4uy4kVmcrzc. Left: post it; a 4:5 cut for feeds; give the GitHub repo a description first (it shows "No description" and 0 stars). |
+| todo | Launch film | Rendered locally (`film/`, kept out of git; posted by hand), 50 s, 1080p60, no narration: two halves: for you, every app in its own window (an emulator's phone dissolves into app windows); for your AI, headless (Claude uses Maps with no window and answers, or hands the app over). Real captures from the demo Android, the agent's hidden Maps session replayed, a score made in code. Page: https://claude.ai/artifact/J8VydqXW5gi4uy4kVmcrzc. Left: post it; a 4:5 cut for feeds; give the GitHub repo a description first (it shows "No description" and 0 stars). |
 
 ## Next
 

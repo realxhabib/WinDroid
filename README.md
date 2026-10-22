@@ -56,8 +56,7 @@ drag, snap, pin to the taskbar or maximize like any other Windows app.
   your home Wi-Fi. It runs full screen in Safari, by touch, sized to the device and following its
   rotation, and comes back to its window when you like.
 - **Plugins.** Companions that attach to a particular app's window: a side panel glued to its edge
-  and pop-ups on the app itself. The first one, **Hinge Matcher**, is off until you turn it on in
-  Settings > Plugins.
+  and pop-ups on the app itself. They're installed apart from WinDroid (see Plugins below).
 
 Everything runs locally.
 
@@ -85,7 +84,7 @@ The installer isn't code-signed yet, so **Microsoft Defender SmartScreen** may s
 the one published, compare its SHA-256 with the `.sha256` file next to it in the release:
 
 ```powershell
-Get-FileHash "$env:USERPROFILE\Downloads\WinDroid-Setup-0.1.1.exe"
+Get-FileHash "$env:USERPROFILE\Downloads\WinDroid-Setup-0.1.2.exe"
 ```
 
 **Updates.** Once a day, WinDroid asks GitHub whether there's a newer release. If there is, the
@@ -306,67 +305,13 @@ The certificate authority your device trusts is limited to private network addre
 for any website, and its key stays on the PC, encrypted for your Windows account. Before step 3 the
 video itself travels unencrypted on your Wi-Fi.
 
-### Plugins: Hinge Matcher
+### Plugins
 
-Hinge Matcher is **off until you turn it on**, in Settings > Plugins: it reads other people's
-profiles and sends them to Claude, and dating apps' terms are strict about tools that work with them.
-It never likes, sends or skips by itself.
-
-Open Hinge in its window and a dock appears glued to the window's side. On **Discover**, within
-about ten seconds of a profile opening, it shows who they seem to be, which card Claude would like
-and why, and three openers (witty, funny, cute), from the part of the profile on screen. Meanwhile it
-scrolls through the whole profile once, reading every card, and back to the top; the ideas are then
-written again from all of it (unless you've started using the first ones). After that, scrolling
-changes nothing: the ideas only change when you ask. On Hinge itself, the card it picked glows, with
-the current idea in a bubble on it, against its right side and clear of their words and the heart as
-far as the card allows; both follow the card as you scroll. Point at the bubble and it fades to let
-you read what's under it; the eye in the dock (or **Alt+Q** on the Hinge window) hides it altogether,
-and that sticks. In a **chat** you get three reply ideas instead, written for where the conversation
-stands; there the bubble goes in an empty stretch above the message box, off the messages (with no
-room, over the oldest ones on screen). A message too short for the whole-screen read ("Hey") gets its
-bubble read on its own, and Hinge's notes ("You liked their photo", "Double tap to like") count as how
-the chat started, not as messages.
-
-- **It fills in, you tap.** Tap ♥ on a card in Hinge so the comment box opens, then click an idea
-  in the dock (or press **Alt+Enter** on the Hinge window): it goes into the box exactly as written,
-  and the plugin checks the box shows it. Read it over, then press **Send like** yourself. Clicked an
-  idea before opening the box? It waits, and goes in as soon as the box opens. In a chat, it goes into
-  the message box. The plugin never presses Like, Send or Skip, and never sends anything.
-- **Go to a card.** Click a card in the dock (Photo 2, Prompt 1…, numbered as on the page), an
-  idea's "on prompt …", or the pick's "Like their …", and Hinge scrolls to it: steered by which cards
-  are on screen after each move, with the same margin drags as the read. Photo 1 is the top.
-- **It remembers.** Resizing or moving the window keeps everything: what was read, the ideas, where
-  you were. The card positions are scaled to the new width and put right as each card shows again,
-  so nothing is read or written twice. A profile seen in the last half hour that shows again (back
-  from a chat) gets its ideas back, unless its cards turn out to say something else.
-- **Shape the ideas.** Hover an idea to see it on its card. **Alt+←/→** on the Hinge window cycles
-  them. The pencil edits one before it goes in. The slider leans playful or sincere, **Shorter** /
-  **Longer** sets the length, and **New ideas** writes three more, following anything you type in
-  "Tell Claude…" ("mention I cook"). **Skip** notes the pass in the history; you tap ✕ in Hinge.
-- **Unnoticed.** It reads Hinge from screenshots of its window, taken on the PC, and Windows' own
-  OCR: nothing runs inside Android, and the accessibility service stays off. An idea goes in through
-  the window's own keyboard, the virtual keyboard yours uses: pasted (Ctrl+V, after scrcpy copies the
-  text to Android), which keeps it exact. Typed key by key, Android's keyboard app auto-corrects and
-  capitalises depending on timing ("can i" became "Can I", and keys went missing), so typing is only
-  an option: `"insert": "type"` in the config. Your clipboard is put back afterwards. Reading
-  the whole profile is a finger dragging the page up a little under half a screen at a time, in the
-  page's left margin where no card, video or button can take the touch, and a few flicks back to the
-  top: the touches a mouse drag in the window makes. It stops if you scroll, tap ♥ or move on; a
-  passing frame of something else doesn't stop it, and drags an overloaded emulator drops aren't
-  taken for the end of the profile. In a chat, the box gets a tap (a touch on Hinge's display: it
-  doesn't take a posted click) before the paste.
-- **Your voice.** Settings come from Hinge Matcher's `config.json` (`%USERPROFILE%\hinge-matcher`)
-  when it's there, so the iPhone version and this one share your profile (`me`), voice and model;
-  otherwise from `%LOCALAPPDATA%\AndroidDesktop\plugins\hinge\config.json`. The history (what was
-  filled in, sent or skipped) is shared too, so openers don't repeat. `backend` picks how Claude is
-  reached: `claude-cli` (your Claude login, no key), `api` (needs the `anthropic` package and an API
-  key) or `auto`. `android_effort` (default `low`, about 7 s a draft) is how hard Claude thinks
-  here; the shared `effort` stays the iPhone version's. The config is never logged.
-- **On and off.** Settings > Plugins, which sets `"plugins": {"hinge": true}` (or `false`) in
-  `%LOCALAPPDATA%\AndroidDesktop\state.json`;
-  `"read_whole_profile": false` in the config to read only what you scroll past yourself.
-  `ANDROIDDESKTOP_PLUGIN_DEBUG=1` logs what the reader sees and does to `logs\hinge-debug.log`
-  (card ids and names, never what the cards say).
+Plugins are companions for particular apps, installed apart from WinDroid: each is a folder in
+`%LOCALAPPDATA%\AndroidDesktop\plugins` (**Plugins folder** in Settings > Plugins opens it).
+WinDroid loads them when it starts, and Settings > Plugins turns each one on or off. WinDroid itself
+ships with none. A plugin is a Python package whose `__init__.py` sets `PLUGIN`: the docstring of
+`androiddesktop/plugins/__init__.py` describes what WinDroid hands it.
 
 Logs: `%LOCALAPPDATA%\AndroidDesktop\logs` (`androiddesktop.log`, `emulator.log`, `agent.log` for AI
 agents, and one file per app window under `windows\`). Uncaught errors from any thread are logged
@@ -516,22 +461,9 @@ Launcher (WebView2)      App window (Win32, frameless)            App window (8t
   after each batch of messages unless Windows says the key is down. Real keystrokes (`SendInput`)
   lost characters on their way through Windows when tested. Windows OCR is `Windows.Media.Ocr`
   called with plain ctypes, one recognition at a time (the engine fails a second one meanwhile).
-- **Hinge Matcher** (`plugins/hinge/`): a capture loop watches the view several times a second. Between
-  frames it measures how far the content scrolled (row-by-row comparison of small greyscale copies,
-  then to the pixel on the full frames), which keeps the pop-ups on their card. When the picture
-  holds still it OCRs it and tells the screens apart (a profile: cards on the page; the like sheet:
-  "Add a comment" and "Send like"; a chat: the Chat / Profile tabs and "Send a message"). Cards are
-  found from the page color down their edges, a prompt's question and answer by type size, and each
-  card gets a place on the page (view position plus the scroll so far), so the profile adds up as
-  you scroll. A scroll is measured on the rows with detail, by a low percentile of how far each row
-  is off rather than the average, so a playing video or the floating X doesn't outvote the page.
-  Reading the whole profile drags it (`input touchscreen motionevent`, over one `adb shell` kept
-  open: a finger follows 1:1 and, held still before lifting, leaves no fling; Hinge treats quick
-  wheel turns as acceleration, so the wheel's steps vary from 6 to 500 px). Each step is measured on
-  the still pictures before and after it, and Hinge can take half a second to start moving while a
-  video plays. The name is read again without the purple verified badge, which OCR takes for a
-  letter, and the reading that comes up most often wins. `writer.py` (from Hinge Matcher) turns it
-  into a draft with Claude.
+  Plugins are folders in `%LOCALAPPDATA%\AndroidDesktop\plugins` (and in `ANDROIDDESKTOP_PLUGINS`),
+  each imported as `windroid_plugins.<folder>` when WinDroid starts; one that fails to load is logged
+  and left out.
 - **Agent sessions** (`ghost.py`, `mcp.py`, `uitree.py`, `agenthelper.py` and
   `helper/src/AgentHelper.java`): the MCP server keeps one helper process running inside Android
   (`app_process`, one JSON line each way over `adb shell`). It makes each hidden app's virtual
@@ -599,6 +531,8 @@ launcher in the Start menu itself (as **WinDroid**) and never updates itself; it
   question then means that folder too.)
 - `ANDROIDDESKTOP_RUNTIME=<folder>` takes the Android runtime (emulator, system image, adb, scrcpy)
   from another data folder, so a separate instance needn't download its own 7 GB.
+- `ANDROIDDESKTOP_PLUGINS=<folder>` loads plugins from that folder too (several separated by `;`),
+  ahead of installed copies of the same name: for working on a plugin where it's checked out.
 - `ANDROIDDESKTOP_REMOTE_LOOPBACK=1` also serves the iPhone & iPad pages on http://127.0.0.1:47821,
   which browsers treat as secure, so the web app (`androiddesktop/remote/web`) can be tried with
   WebCodecs in a desktop browser without a certificate. The unit tests include the web app's crypto

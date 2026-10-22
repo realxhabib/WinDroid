@@ -120,10 +120,12 @@ class PluginDefaultTest(unittest.TestCase):
         with mock.patch.object(plugins.state, "get", lambda key, default=None: saved if key == "plugins" else default):
             return plugins.PluginHost.enabled(cls)
 
-    def test_hinge_matcher_is_off_until_turned_on(self):
-        from androiddesktop.plugins.hinge import HingeMatcher
-        self.assertFalse(self.enabled(HingeMatcher, None))
-        self.assertTrue(self.enabled(HingeMatcher, {"hinge": True}))
+    def test_a_plugin_can_be_off_until_turned_on(self):
+        class Quiet(plugins.Plugin):
+            name = "quiet"
+            default_on = False
+        self.assertFalse(self.enabled(Quiet, None))
+        self.assertTrue(self.enabled(Quiet, {"quiet": True}))
 
     def test_other_plugins_default_on(self):
         class Other(plugins.Plugin):

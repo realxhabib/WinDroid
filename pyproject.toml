@@ -26,12 +26,11 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["androiddesktop", "androiddesktop.plugins", "androiddesktop.plugins.hinge", "androiddesktop.remote"]
+packages = ["androiddesktop", "androiddesktop.plugins", "androiddesktop.remote"]
 
 [tool.setuptools.dynamic]
 version = {attr = "androiddesktop.__version__"}  # the one place it's set; a release's tag must match it
 
 [tool.setuptools.package-data]
 androiddesktop = ["assets/*", "ui/*"]
-"androiddesktop.plugins.hinge" = ["dock/*"]
 "androiddesktop.remote" = ["web/*"]

@@ -539,7 +539,7 @@ class Features:
 
     @staticmethod
     def open_folder(which: str) -> None:
-        folder = {"logs": LOGS, "data": DATA}.get(which)
+        folder = {"logs": LOGS, "data": DATA, "plugins": DATA / "plugins"}.get(which)
         if folder is not None:
             folder.mkdir(parents=True, exist_ok=True)
             os.startfile(folder)

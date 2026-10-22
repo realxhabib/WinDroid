@@ -5,6 +5,7 @@
 #   _internal/        Python, the androiddesktop package with its assets and ui, and their libraries
 # -*- mode: python -*-
 import re
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_submodules
@@ -15,6 +16,14 @@ ROOT = Path(SPECPATH).parent
 PACKAGE = ROOT / "androiddesktop"
 VERSION = re.search(r'__version__ = "([\d.]+)"', (PACKAGE / "__init__.py").read_text(encoding="utf-8")).group(1)
 ICON = str(PACKAGE / "assets" / "icon.ico")
+
+# Plugins (androiddesktop/plugins) run inside WinDroid with what it bundles, and they aren't here to be traced,
+# so all of the standard library and all of Pillow come along, not only what WinDroid itself imports.
+NOT_FOR_PLUGINS = {"tkinter", "turtle", "turtledemo", "idlelib", "test", "ensurepip", "venv", "lib2to3",
+                   "pydoc_data", "this", "antigravity"}
+PLUGIN_RUNTIME = [name for module in sorted(sys.stdlib_module_names - NOT_FOR_PLUGINS) if not module.startswith("_")
+                  for name in collect_submodules(module, filter=lambda n: ".test" not in n) or [module]]
+PLUGIN_RUNTIME += collect_submodules("PIL", filter=lambda n: n not in ("PIL.ImageTk", "PIL.ImageQt", "PIL._tkinter_finder"))
 
 
 def version_info(exe: str, description: str) -> VSVersionInfo:
@@ -43,7 +52,7 @@ a = Analysis(
            if f.is_file() and f.suffix not in (".py", ".pyc") and "__pycache__" not in f.parts],
     # Some of ours are imported only when a command needs them; pywintypes imports win32timezone itself,
     # whenever it hands back a time (a shortcut's GetPath does).
-    hiddenimports=collect_submodules("androiddesktop") + ["win32timezone"],
+    hiddenimports=collect_submodules("androiddesktop") + ["win32timezone"] + PLUGIN_RUNTIME,
     excludes=["tkinter"],  # Pillow's ImageTk would bring Tcl/Tk along
 )
 pyz = PYZ(a.pure)

@@ -230,25 +230,25 @@ class FakeHost:
 class Plugins(unittest.TestCase):
     def setUp(self):
         temp_state(self)
-        self.host = FakeHost([Plugin("hinge", "Hinge Matcher", ["co.hinge.app"])])
+        self.host = FakeHost([Plugin("notes", "Notes", ["com.example.notes"])])
         quiet = mock.patch.object(features, "log")
         quiet.start()
         self.addCleanup(quiet.stop)
 
     def test_none_without_plugins_in_this_build(self):
         self.assertIsNone(features.plugins_card(None))
-        self.assertEqual(features.plugins_for(None, "co.hinge.app"), [])
+        self.assertEqual(features.plugins_for(None, "com.example.notes"), [])
 
     def test_list_and_toggle(self):
         self.assertEqual(features.plugins_card(self.host),
-                         [{"name": "hinge", "title": "Hinge Matcher", "packages": ["co.hinge.app"], "on": True}])
-        wins = [Window("co.hinge.app"), Window("com.android.chrome"), Window("co.hinge.app", closing=True)]
-        self.assertTrue(features.set_plugin(self.host, wins, "hinge", False, lambda fn: fn()))
-        self.assertEqual(state.get("plugins"), {"hinge": False})
+                         [{"name": "notes", "title": "Notes", "packages": ["com.example.notes"], "on": True}])
+        wins = [Window("com.example.notes"), Window("com.android.chrome"), Window("com.example.notes", closing=True)]
+        self.assertTrue(features.set_plugin(self.host, wins, "notes", False, lambda fn: fn()))
+        self.assertEqual(state.get("plugins"), {"notes": False})
         self.assertFalse(features.plugins_card(self.host)[0]["on"])
-        # Only the Hinge window that's open restarts its plugins (now without Hinge Matcher).
-        self.assertEqual(self.host.events, [("closed", "co.hinge.app"), ("shown", "co.hinge.app")])
-        self.assertEqual(features.plugins_for(self.host, "co.hinge.app")[0]["on"], False)
+        # Only the Notes window that's open restarts its plugins (now without the plugin).
+        self.assertEqual(self.host.events, [("closed", "com.example.notes"), ("shown", "com.example.notes")])
+        self.assertEqual(features.plugins_for(self.host, "com.example.notes")[0]["on"], False)
         self.assertEqual(features.plugins_for(self.host, "com.android.chrome"), [])
 
     def test_unknown_plugin(self):
@@ -516,8 +516,8 @@ class ApiMethods(unittest.TestCase):
         f.camera.assert_called_with("install")
         self.api.connect_claude()
         self.api.disconnect_claude()
-        self.api.set_plugin("hinge", 0)
-        f.set_plugin.assert_called_with("hinge", False)
+        self.api.set_plugin("notes", 0)
+        f.set_plugin.assert_called_with("notes", False)
         self.api.set_app_windows("auto")
         self.api.set_quality("low")
         self.api.check_updates()
@@ -598,8 +598,8 @@ class AgentActions(unittest.TestCase):
         a._window_action(app, "info")
         a.open.assert_called_once_with("com.android.settings", ["-a", "android.settings.APPLICATION_DETAILS_SETTINGS",
                                                                 "-d", "package:com.example.notes"])
-        a._window_action(app, "plugin:hinge=off")
-        a.features.set_plugin.assert_called_once_with("hinge", False)
+        a._window_action(app, "plugin:notes=off")
+        a.features.set_plugin.assert_called_once_with("notes", False)
         a._window_action(app, "uninstall")  # the window asked "are you sure?" already
         a.uninstall.assert_called_once_with("com.example.notes", confirmed=True)
         a._window_action(app, "settings")
@@ -631,16 +631,16 @@ class WindowMenu(unittest.TestCase):
         self.assertNotIn("uninstall", [i[0] for i in appwindow.menu_items(app, False, False, [], None) if i])
 
     def test_plugins_and_phones(self):
-        app = App("co.hinge.app", ".Main", "Hinge", False, 0)
-        plugins = [{"name": "hinge", "title": "Hinge Matcher", "packages": ["co.hinge.app"], "on": True}]
+        app = App("com.example.notes", ".Main", "Notes", False, 0)
+        plugins = [{"name": "notes", "title": "Notes", "packages": ["com.example.notes"], "on": True}]
         phones = [("send:group1", "Dylan's iPhone"), ("pair", "Pair an iPhone or iPad...")]
         items = appwindow.menu_items(app, False, False, plugins, phones)
         self.assertEqual(items[0], ("Send to iPhone or iPad", [("send:send:group1", "Dylan's iPhone", False),
                                                                ("send:pair", "Pair an iPhone or iPad...", False)]))
         self.assertIsNone(items[1])
-        self.assertEqual(items[2], ("plugin:hinge=off", "Hinge Matcher", True))
+        self.assertEqual(items[2], ("plugin:notes=off", "Notes", True))
         plugins[0]["on"] = False
-        self.assertEqual(appwindow.menu_items(app, False, False, plugins, None)[0], ("plugin:hinge=on", "Hinge Matcher", False))
+        self.assertEqual(appwindow.menu_items(app, False, False, plugins, None)[0], ("plugin:notes=on", "Notes", False))
 
 
 if __name__ == "__main__":

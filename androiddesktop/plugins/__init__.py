@@ -18,18 +18,31 @@ makes an instance for that window and hands it an AppHandle, its view of the win
 Hooks run on the window thread, so they must return quickly; slow work goes on threads of the
 plugin's own, which come back with app.call(fn). state.json's "plugins" ({"<name>": true or false}, set
 from Settings > Plugins) turns a plugin on or off; without an entry, its default_on decides.
+
+Plugins aren't part of WinDroid: each is a Python package in a folder of its own in PLUGINS
+(%LOCALAPPDATA%\\AndroidDesktop\\plugins\\<folder>), whose __init__.py defines PLUGIN, its Plugin
+class. WinDroid imports it as windroid_plugins.<folder> when it starts, so it runs with what WinDroid
+bundles: Python's standard library, Pillow, WinDroid's own modules (androiddesktop.*) and the pywin32
+modules they use (packaging/windroid.spec brings the whole standard library and Pillow for plugins).
+ANDROIDDESKTOP_PLUGINS adds more folders to look in (separated by ;), for working on a plugin where
+it's checked out.
 """
 from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wt
 import importlib
+import importlib.util
+import os
 import queue
 import subprocess
+import sys
 import threading
 import time
 import traceback
+import types
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 import win32api
@@ -39,13 +52,14 @@ from PIL import Image
 
 from .. import adb, keys, overlay, state, winapi
 from ..log import log
-from ..paths import ADB_EXE, SERIAL, android_env
+from ..paths import ADB_EXE, DATA, SERIAL, android_env
 
 if TYPE_CHECKING:
     from ..appwindow import AppWindow
     from ..manager import WindowManager
 
-BUILTIN = ("androiddesktop.plugins.hinge",)  # modules with a PLUGIN class
+PLUGINS = DATA / "plugins"
+NAMESPACE = "windroid_plugins"  # installed plugins are imported as windroid_plugins.<folder>
 DWMWA_EXTENDED_FRAME_BOUNDS = 9
 EVENT_SYSTEM_FOREGROUND = 0x0003
 WINEVENT_OUTOFCONTEXT = 0
@@ -323,12 +337,47 @@ class Plugin:
         """The window is going away: close everything."""
 
 
+def plugin_folders() -> list[Path]:
+    """The installed plugins: folders with an __init__.py, in ANDROIDDESKTOP_PLUGINS's folders, then in
+    PLUGINS. A name found twice is the first one's (a checkout being worked on, over the installed copy)."""
+    roots = [Path(p) for p in os.environ.get("ANDROIDDESKTOP_PLUGINS", "").split(os.pathsep) if p] + [PLUGINS]
+    found: dict[str, Path] = {}
+    for root in roots:
+        try:
+            folders = sorted(root.iterdir())
+        except OSError:
+            continue  # not there (no plugins installed)
+        for folder in folders:
+            if folder.name.isidentifier() and (folder / "__init__.py").is_file():
+                found.setdefault(folder.name, folder)
+    return list(found.values())
+
+
+def import_plugin(folder: Path) -> types.ModuleType:
+    """A plugin's package, imported from its folder as windroid_plugins.<folder>."""
+    if NAMESPACE not in sys.modules:
+        namespace = types.ModuleType(NAMESPACE)
+        namespace.__path__ = []
+        sys.modules[NAMESPACE] = namespace
+    name = f"{NAMESPACE}.{folder.name}"
+    spec = importlib.util.spec_from_file_location(name, folder / "__init__.py", submodule_search_locations=[str(folder)])
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        del sys.modules[name]
+        raise
+    return module
+
+
 class PluginHost:
     """Attaches plugins to app windows. Every method runs on the window thread."""
 
-    def __init__(self, manager: WindowManager, modules: tuple[str, ...] = BUILTIN) -> None:
+    def __init__(self, manager: WindowManager, modules: tuple[str, ...] = (), folders: list[Path] | None = None) -> None:
         self.manager = manager
-        self.modules = modules
+        self.modules = modules  # importable modules with a PLUGIN class (tests)
+        self.folders = folders  # plugin folders; None: the installed ones (plugin_folders())
         self.classes: list[type[Plugin]] | None = None
         self.instances: dict[int, list[Plugin]] = {}  # app window hwnd -> its plugins
         self.panel_factory: Callable[..., Any] | None = None  # set by the agent, which runs WebView2
@@ -345,6 +394,12 @@ class PluginHost:
                     self.classes.append(importlib.import_module(name).PLUGIN)
                 except Exception:
                     log(f"plugins: can't load {name}:\n{traceback.format_exc().rstrip()}")
+            for folder in plugin_folders() if self.folders is None else self.folders:
+                try:
+                    self.classes.append(import_plugin(folder).PLUGIN)
+                    log(f"plugins: {folder.name} from {folder}")
+                except Exception:
+                    log(f"plugins: can't load {folder}:\n{traceback.format_exc().rstrip()}")
         return self.classes
 
     @staticmethod
