@@ -1,0 +1,39 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root { --bg: #0b0d11; --row: rgba(255,255,255,0.06); --row-hover: rgba(61,220,132,0.18); --text: #f2f4f7; --dim: rgba(242,244,247,0.55); }
+  @media (prefers-color-scheme: light) {
+    :root { --bg: #f3f5f9; --row: rgba(18,21,27,0.05); --row-hover: rgba(18,168,90,0.16); --text: #12151b; --dim: rgba(18,21,27,0.55); }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 14px 12px; background: var(--bg); color: var(--text); font: 13px/1.35 "Segoe UI Variable Text", "Segoe UI", sans-serif; }
+  h1 { margin: 0 4px 2px; font-size: 13px; font-weight: 600; }
+  p { margin: 0 4px 12px; color: var(--dim); font-size: 12px; }
+  ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+  button { width: 100%; text-align: left; padding: 7px 10px; border: 0; border-radius: 6px; background: var(--row); color: inherit; font: inherit; cursor: pointer; }
+  button:hover { background: var(--row-hover); }
+</style>
+</head>
+<body>
+  <h1>On screen</h1>
+  <p id="hint">Reading the app…</p>
+  <ol id="lines"></ol>
+<script>
+  // The plugin calls window.show([...lines]) with what it read; a click asks it to tap that line.
+  window.show = (lines) => {
+    document.getElementById("hint").textContent = lines.length ? "Click a line to tap it in the app." : "No text on screen.";
+    const list = document.getElementById("lines");
+    list.replaceChildren(...lines.map((text, i) => {
+      const item = document.createElement("li");
+      const button = document.createElement("button");
+      button.textContent = text;
+      button.onclick = () => window.pywebview.api.tap(i);
+      item.append(button);
+      return item;
+    }));
+  };
+</script>
+</body>
+</html>

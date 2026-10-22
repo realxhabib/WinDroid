@@ -7,7 +7,7 @@ backlog**: read it before starting, and update it (move items to Shipped, add ne
 
 ## Run and test
 
-- `.venv\Scripts\pip install -e .` once; `.venv\Scripts\python -m pyflakes androiddesktop tools tests`
+- `.venv\Scripts\pip install -e .` once; `.venv\Scripts\python -m pyflakes androiddesktop tools tests examples`
   and `.venv\Scripts\python -m unittest` must pass before any commit.
 - `tools/smoke_test.py` checks a live window against Android; `tools/try_windows.py <package>` opens
   windows in a harness process; `tools/plugin_check.py` checks the plugin system; `tools/build_installer.py`

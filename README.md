@@ -56,7 +56,8 @@ drag, snap, pin to the taskbar or maximize like any other Windows app.
   your home Wi-Fi. It runs full screen in Safari, by touch, sized to the device and following its
   rotation, and comes back to its window when you like.
 - **Plugins.** Companions that attach to a particular app's window: a side panel glued to its edge
-  and pop-ups on the app itself. They're installed apart from WinDroid (see Plugins below).
+  and pop-ups on the app itself. They're installed apart from WinDroid, and you can write your own
+  ([PLUGINS.md](PLUGINS.md)).
 
 Everything runs locally.
 
@@ -310,8 +311,9 @@ video itself travels unencrypted on your Wi-Fi.
 Plugins are companions for particular apps, installed apart from WinDroid: each is a folder in
 `%LOCALAPPDATA%\AndroidDesktop\plugins` (**Plugins folder** in Settings > Plugins opens it).
 WinDroid loads them when it starts, and Settings > Plugins turns each one on or off. WinDroid itself
-ships with none. A plugin is a Python package whose `__init__.py` sets `PLUGIN`: the docstring of
-`androiddesktop/plugins/__init__.py` describes what WinDroid hands it.
+ships with none. To write one, see [PLUGINS.md](PLUGINS.md): a plugin gets the app's screen
+(screenshots and Windows' own OCR), input (paste, type, tap) and a side panel and overlays on its
+window. [Screen Text](examples/plugins/screen_text) is a small one to start from.
 
 Logs: `%LOCALAPPDATA%\AndroidDesktop\logs` (`androiddesktop.log`, `emulator.log`, `agent.log` for AI
 agents, and one file per app window under `windows\`). Uncaught errors from any thread are logged

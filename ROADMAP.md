@@ -5,6 +5,10 @@ done, move it to **Shipped** with the version; when an idea turns into work, giv
 
 Status: `todo`, `doing`, `blocked` (waiting on something outside the code), `idea` (not decided yet).
 
+## Next release
+
+- A guide to writing plugins (`PLUGINS.md`) and an example plugin, Screen Text (`examples/plugins`).
+
 ## Shipped in 0.1.2
 
 - Plugins are installed apart from WinDroid: folders in `%LOCALAPPDATA%\AndroidDesktop\plugins`, loaded
