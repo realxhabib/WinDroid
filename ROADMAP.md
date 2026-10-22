@@ -5,6 +5,13 @@ done, move it to **Shipped** with the version; when an idea turns into work, giv
 
 Status: `todo`, `doing`, `blocked` (waiting on something outside the code), `idea` (not decided yet).
 
+## Unreleased
+
+- MIT license (`LICENSE`).
+- Setup shows Google's Android SDK License Agreement, as Google publishes it, and downloads nothing
+  from Google until it's agreed to (`terms-accepted.json`; asked again if Google changes the text).
+- Hinge Matcher is off until turned on in Settings > Plugins.
+
 ## Shipped in 0.1.0
 
 - Each Android app in its own frameless Windows window: drag, snap, resize, taskbar button, Start menu.
@@ -36,7 +43,8 @@ Status: `todo`, `doing`, `blocked` (waiting on something outside the code), `ide
 | todo | The installer isn't code-signed | SmartScreen warns on first run. Needs a code-signing certificate. |
 | todo | Dock labels in the launcher wrap onto two lines | Cosmetic. |
 | idea | Names: the product is WinDroid, the Python package and data folder are still `androiddesktop` / `AndroidDesktop` | Renaming the data folder needs a migration; the package name is internal. |
-| todo | Hinge Matcher and the terms of dating apps | It never likes, sends or skips by itself; keep it that way, and say so in the README. |
+| todo | Hinge Matcher and the terms of dating apps | Off by default now, and it never likes, sends or skips by itself. Keep it out of launch posts. |
+| todo | License notices for the libraries inside the installer | pywin32, Pillow, pywebview, pythonnet, cryptography and others are bundled; several of their licenses ask for their notices to ship with them. Collect them into a THIRD-PARTY-NOTICES file in the installer. |
 
 ## Next
 

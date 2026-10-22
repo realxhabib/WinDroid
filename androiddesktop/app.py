@@ -107,8 +107,14 @@ class Api:
     def minimize(self) -> None:
         self._agent.window.minimize()
 
-    def setup(self) -> None:
-        self._agent.setup()
+    def setup_terms(self) -> dict:
+        return self._agent.setup_terms()
+
+    def setup(self, fingerprint: str = "") -> None:
+        self._agent.setup(fingerprint or "")
+
+    def open_terms(self) -> None:
+        os.startfile(runtime.TERMS_URL)  # only ever Google's page, never a URL from the page
 
     def install_apk(self) -> None:
         self._agent.install_apk()
@@ -732,9 +738,30 @@ class Agent:
         self.recheck()
 
     # ------------------------------------------------------------------ setup & app management
-    def setup(self) -> None:
+    def setup_terms(self) -> dict:
+        """Google's terms for the setup card, as Google publishes them now (runtime.py)."""
+        try:
+            text = runtime.fetch_terms()
+        except Exception as e:
+            log(f"setup: can't get Google's terms: {e!r}")
+            return {"error": "Couldn't get Google's terms. Check your connection and try again.",
+                    "url": runtime.TERMS_URL}
+        self._terms = text
+        return {"text": text, "fingerprint": runtime.terms_fingerprint(text), "name": runtime.TERMS_NAME,
+                "url": runtime.TERMS_URL, "accepted": runtime.terms_accepted(text)}
+
+    def setup(self, fingerprint: str = "") -> None:
+        """fingerprint: of the terms text the user agreed to on the setup card."""
         if self.setup_state["busy"]:
             return
+        text = getattr(self, "_terms", None)
+        if runtime.needs_google_download():
+            if not text or runtime.terms_fingerprint(text) != fingerprint:
+                self.setup_state.update(error="Agree to Google's terms above first.")
+                self.push()
+                return
+            runtime.accept_terms(text)
+            log(f"setup: Google's {runtime.TERMS_NAME} agreed to ({fingerprint[:12]})")
 
         def progress(message: str, fraction: float) -> None:
             self.setup_state.update(message=message, progress=max(0.0, fraction))
@@ -750,11 +777,15 @@ class Agent:
             self.setup_state.update(busy=True, error="", progress=0, message="Preparing...")
             self.push()
             try:
-                runtime.install(progress)
+                runtime.install(progress, terms=text)
                 self.setup_state.update(installed=True, busy=False)
                 shortcuts.ensure_launcher_shortcut()
                 self.push(apps=True)
                 self.vm.ensure_running()
+            except runtime.TermsNotAccepted:  # Google's terms changed since they were shown
+                log("setup: Google's terms changed; asking again")
+                self.setup_state.update(busy=False, error="Google's terms have changed. Read them again above.")
+                self.push()
             except Exception as e:
                 log(f"setup failed: {e!r}")
                 self.setup_state.update(busy=False, error=f"Setup didn't finish: {e}. Check your connection and try again.")
@@ -844,6 +875,41 @@ def wait_for_agent_exit(timeout: float = 180) -> None:
         time.sleep(0.25)
 
 
+ACCEPT_FLAG = "--accept-android-sdk-license"
+
+
+def cli_setup(args: list[str]) -> int:
+    """`setup` in a console: Google's terms first (printed, then y/N, or ACCEPT_FLAG for scripts), then
+    the download. Returns the exit code."""
+    def progress(message: str, fraction: float) -> None:
+        print(f"\r{message:<70} {max(fraction, 0) * 100:5.1f}%", end="", flush=True)
+
+    terms = None
+    if runtime.needs_google_download():
+        try:
+            terms = runtime.fetch_terms()
+        except Exception as e:
+            print(f"Couldn't get Google's terms ({e}). Check your connection and try again.", file=sys.stderr)
+            return 1
+        if not runtime.terms_accepted(terms):
+            print(f"Setup downloads Google's Android Emulator and Android 16 with Google Play from Google,\n"
+                  f"under Google's {runtime.TERMS_NAME} ({runtime.TERMS_URL}):\n")
+            print(terms, "\n")
+            if ACCEPT_FLAG in args:
+                print(f"Agreed with {ACCEPT_FLAG}.")
+            elif sys.stdin is not None and sys.stdin.isatty():
+                if input("Do you agree to these terms? (y/N) ").strip().lower() not in ("y", "yes"):
+                    print("Setup stopped: nothing was downloaded.")
+                    return 1
+            else:
+                print(f"Setup stopped: run it in a console to agree, or pass {ACCEPT_FLAG}.", file=sys.stderr)
+                return 1
+            runtime.accept_terms(terms)
+    runtime.install(progress, terms=terms)
+    print()
+    return 0
+
+
 def main() -> None:
     args = sys.argv[1:]
     command = args[0] if args else ""
@@ -854,9 +920,7 @@ def main() -> None:
     if problem:
         log(f"data folder: {problem}")
     if command == "setup":
-        runtime.install(lambda m, f: print(f"\r{m:<70} {f * 100:5.1f}%", end="", flush=True))
-        print()
-        return
+        sys.exit(cli_setup(args[1:]))
     if command == "camera":
         sys.exit(camera.main(args[1:]))
     if command == "doctor":

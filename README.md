@@ -56,8 +56,8 @@ drag, snap, pin to the taskbar or maximize like any other Windows app.
   your home Wi-Fi. It runs full screen in Safari, by touch, sized to the device and following its
   rotation, and comes back to its window when you like.
 - **Plugins.** Companions that attach to a particular app's window: a side panel glued to its edge
-  and pop-ups on the app itself. The first one, **Hinge Matcher**, suggests which card to like and
-  writes openers and replies with Claude, and fills them in for you to send.
+  and pop-ups on the app itself. The first one, **Hinge Matcher**, is off until you turn it on in
+  Settings > Plugins.
 
 Everything runs locally.
 
@@ -106,6 +106,12 @@ Open **WinDroid** from the Start menu. The first start shows **Set up Android**,
 Google's Android Emulator, an Android 16 (Google Play) system image, adb and
 [scrcpy](https://github.com/Genymobile/scrcpy). All are checksum-verified and stored in
 `%LOCALAPPDATA%\AndroidDesktop` (the folder keeps WinDroid's first name, Android Desktop).
+
+Google's emulator, system image and adb come under Google's
+[Android Software Development Kit License Agreement](https://developer.android.com/studio/terms).
+Setup shows its full text, as Google publishes it, and downloads nothing until you tick **I agree**.
+WinDroid keeps a record of the agreement (`terms-accepted.json` in the data folder); if Google
+changes the terms, it asks again before downloading anything more.
 
 Android takes about 30 seconds to start; the very first boot takes a few minutes while Android
 sets itself up. Sign in to Google Play from **Get apps** to install apps.
@@ -178,7 +184,7 @@ commands that print.
 | `WinDroid.exe quit` | ...and exit WinDroid |
 | `WinDroid.exe boot` | Start Android without showing anything (what an AI agent's session asks for) |
 | `WinDroid.exe mcp` | The MCP server for AI agents (below), over stdin/stdout |
-| `windroid-cli.exe setup` | Download and install the Android runtime, with progress in the console |
+| `windroid-cli.exe setup` | Show Google's terms, ask you to agree, then download and install the Android runtime, with progress in the console. `--accept-android-sdk-license` agrees for scripts |
 | `windroid-cli.exe doctor` | Check whether this PC can run Android, and print what's wrong |
 | `windroid-cli.exe camera` | Is the Android Desktop Camera installed? `camera install` / `camera uninstall` |
 | `windroid-cli.exe camera test on` | The Android Desktop Camera shows a test pattern instead of the webcam (`off` to stop) |
@@ -302,6 +308,10 @@ video itself travels unencrypted on your Wi-Fi.
 
 ### Plugins: Hinge Matcher
 
+Hinge Matcher is **off until you turn it on**, in Settings > Plugins: it reads other people's
+profiles and sends them to Claude, and dating apps' terms are strict about tools that work with them.
+It never likes, sends or skips by itself.
+
 Open Hinge in its window and a dock appears glued to the window's side. On **Discover**, within
 about ten seconds of a profile opening, it shows who they seem to be, which card Claude would like
 and why, and three openers (witty, funny, cute), from the part of the profile on screen. Meanwhile it
@@ -352,7 +362,8 @@ the chat started, not as messages.
   reached: `claude-cli` (your Claude login, no key), `api` (needs the `anthropic` package and an API
   key) or `auto`. `android_effort` (default `low`, about 7 s a draft) is how hard Claude thinks
   here; the shared `effort` stays the iPhone version's. The config is never logged.
-- **Off switch.** `"plugins": {"hinge": false}` in `%LOCALAPPDATA%\AndroidDesktop\state.json`;
+- **On and off.** Settings > Plugins, which sets `"plugins": {"hinge": true}` (or `false`) in
+  `%LOCALAPPDATA%\AndroidDesktop\state.json`;
   `"read_whole_profile": false` in the config to read only what you scroll past yourself.
   `ANDROIDDESKTOP_PLUGIN_DEBUG=1` logs what the reader sees and does to `logs\hinge-debug.log`
   (card ids and names, never what the cards say).
@@ -690,3 +701,10 @@ What's missing and what's next is tracked in [ROADMAP.md](ROADMAP.md).
 - Sound stays on the PC. Sending one app's sound to the device looks feasible: Android 13+ can capture
   a single app's playback (AudioPlaybackCapture by app; scrcpy has a playback source), which could go
   to Safari as Opus or AAC beside the video. Not built yet.
+
+## License
+
+WinDroid is under the [MIT License](LICENSE). What setup downloads keeps its own license: Google's
+Android Emulator, Android system image and adb come under Google's
+[Android Software Development Kit License Agreement](https://developer.android.com/studio/terms),
+and [scrcpy](https://github.com/Genymobile/scrcpy) under the Apache License 2.0.

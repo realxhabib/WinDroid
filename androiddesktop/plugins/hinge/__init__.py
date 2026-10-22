@@ -136,6 +136,9 @@ class HingeMatcher(Plugin):
     name = "hinge"
     title = "Hinge Matcher"
     packages = frozenset({"co.hinge.app"})
+    # Off until the user turns it on: it reads other people's profiles and sends them to Claude, and
+    # dating apps' terms are strict about tools that work with them.
+    default_on = False
 
     def __init__(self, app: AppHandle) -> None:
         super().__init__(app)

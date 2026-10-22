@@ -64,6 +64,7 @@ Type: filesandordirs; Name: "{app}\_internal"
 
 [Files]
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 
 [Icons]
 ; The launcher window's AppUserModelID (shortcuts.LAUNCHER_ID), so it and this entry are one app to Windows.

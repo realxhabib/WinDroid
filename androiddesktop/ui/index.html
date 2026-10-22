@@ -52,7 +52,14 @@
         <li><span class="glyph">&#xE72E;</span>Nothing leaves your PC</li>
       </ul>
       <div class="notices" id="setup-notices"></div>
-      <button class="primary" id="setup-go">Set up Android</button>
+      <div class="terms" id="setup-terms">
+        <p class="terms-intro">Setup downloads Google's Android Emulator and Android 16 with Google Play from
+           Google, under Google's <a href="#" id="terms-link">Android SDK License Agreement</a>.</p>
+        <div class="terms-text" id="terms-text" tabindex="0" aria-label="Google's Android SDK License Agreement"></div>
+        <button class="ghost" id="terms-retry" hidden>Try again</button>
+        <label class="terms-agree"><input type="checkbox" id="terms-agree"> I agree to Google's Android SDK License Agreement</label>
+      </div>
+      <button class="primary" id="setup-go" disabled>Set up Android</button>
       <div class="progress" id="setup-progress" hidden>
         <div class="bar"><div class="fill" id="setup-fill"></div></div>
         <div class="progress-text" id="setup-text">Starting...</div>

@@ -75,6 +75,8 @@ function renderSetup() {
   $("home").hidden = showSetup || remoteOpen || inHub;
   $("dock").hidden = showSetup || inHub;
   $("setup-go").hidden = !!s.busy;
+  $("setup-terms").hidden = !!s.busy;
+  if (showSetup && !s.busy) loadTerms();
   $("setup-progress").hidden = !s.busy;
   $("setup-fill").style.width = `${Math.round((s.progress || 0) * 100)}%`;
   $("setup-text").textContent = s.message || "";
@@ -82,12 +84,42 @@ function renderSetup() {
   $("setup-error").textContent = s.error || "";
 }
 
+// Google's terms for what setup downloads (runtime.py): shown in full, and setup stays off until they're
+// agreed to. The agreement names the exact text shown (its fingerprint), so a changed license asks again.
+let diskBlocked = false, terms = null, termsLoading = false;
+function updateSetupButton() {
+  $("setup-go").disabled = diskBlocked || !(terms && terms.fingerprint) || !$("terms-agree").checked;
+}
+function loadTerms() {
+  if (termsLoading || (terms && terms.fingerprint)) return;
+  termsLoading = true;
+  $("terms-retry").hidden = true;
+  $("terms-text").textContent = "Getting Google's terms...";
+  api().setup_terms().then((t) => {
+    terms = t || {};
+    $("terms-text").textContent = terms.text || terms.error || "Couldn't get Google's terms.";
+    $("terms-retry").hidden = !!terms.text;
+    if (terms.accepted) $("terms-agree").checked = true;
+  }).catch(() => {
+    terms = {};
+    $("terms-text").textContent = "Couldn't get Google's terms. Check your connection and try again.";
+    $("terms-retry").hidden = false;
+  }).finally(() => {
+    termsLoading = false;
+    updateSetupButton();
+  });
+}
+$("terms-agree").addEventListener("change", updateSetupButton);
+$("terms-retry").addEventListener("click", () => { terms = null; loadTerms(); });
+$("terms-link").addEventListener("click", (e) => { e.preventDefault(); api().open_terms(); });
+
 // Problems with this PC (see checks.py): what's wrong, why it matters, and a button to fix it.
 let lastNotices = "";
 function renderNotices() {
   const items = (state.checks || []).filter((c) => c.level === "blocking" || !dismissed.has(c.id));
   const key = JSON.stringify(items);
-  $("setup-go").disabled = items.some((c) => c.id === "disk" && c.level === "blocking");
+  diskBlocked = items.some((c) => c.id === "disk" && c.level === "blocking");
+  updateSetupButton();
   if (key === lastNotices) return;
   lastNotices = key;
   for (const box of [$("notices"), $("setup-notices")]) {
@@ -462,7 +494,7 @@ $("apk").addEventListener("click", () => api().install_apk());
 $("settings").addEventListener("click", () => hub.open());
 $("palette-open").addEventListener("click", () => hub.palette());
 $("search-actions").addEventListener("click", () => hub.palette(state.query));
-$("setup-go").addEventListener("click", () => api().setup());
+$("setup-go").addEventListener("click", () => api().setup(terms && terms.fingerprint || ""));
 $("search-play").addEventListener("click", () => api().search_play(state.query));
 
 window.addEventListener("pywebviewready", async () => {

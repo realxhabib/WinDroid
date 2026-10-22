@@ -259,6 +259,29 @@ button { font: inherit; color: inherit; border: 0; background: none; cursor: def
 .notices:empty { display: none; }
 .setup .notices { margin: 0 0 18px; }
 .setup-card:has(.notices:not(:empty)) .setup-art { display: none; } /* room for the problems */
+
+/* Google's terms (runtime.py): the whole text, scrollable, and the box that lets setup start */
+.terms { text-align: left; margin: 0 0 16px; display: grid; gap: 8px; }
+.terms[hidden] { display: none; }
+.setup .terms-intro { margin: 0; font-size: 12px; color: var(--text-2); text-align: center; }
+.terms-intro a { color: var(--accent); }
+.terms-text {
+  height: 120px; overflow-y: auto; overflow-x: hidden; white-space: pre-wrap; overflow-wrap: anywhere;
+  font-size: 11px; line-height: 1.5; color: var(--text-2);
+  background: var(--glass); border: 1px solid var(--stroke); border-radius: 10px; padding: 10px 12px;
+}
+/* Like the app grid's, but always showing: there's more to read */
+.terms-text::-webkit-scrollbar { width: 10px; }
+.terms-text::-webkit-scrollbar-track { background: transparent; }
+.terms-text::-webkit-scrollbar-thumb {
+  background: var(--glass-3); border-radius: 5px; border: 3px solid transparent; background-clip: padding-box;
+}
+.terms-text::-webkit-scrollbar-thumb:hover { background-color: var(--text-3); }
+.terms-text::-webkit-scrollbar-button { display: none; height: 0; }
+.terms-text:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+#terms-retry { justify-self: center; }
+.terms-agree { display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 12.5px; cursor: pointer; }
+.terms-agree input { accent-color: var(--accent); width: 15px; height: 15px; margin: 0; }
 .notice {
   position: relative; display: flex; gap: 12px; padding: 12px 36px 12px 14px; border-radius: 12px;
   background: var(--glass); border: 1px solid var(--stroke); animation: rise .4s cubic-bezier(.2, .8, .2, 1) both;

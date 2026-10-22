@@ -7,13 +7,16 @@ from __future__ import annotations
 
 import ctypes
 import hashlib
+import json
 import os
 import re
 import shutil
 import subprocess
 import urllib.request
+import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -114,7 +117,66 @@ def _extract(pkg: Package, progress: Progress) -> None:
     shutil.rmtree(staging, ignore_errors=True)
 
 
-def install(progress: Progress = lambda m, f: print(m, end="\r")) -> None:
+# ------------------------------------------------------------------ Google's terms
+# Everything setup downloads from Google (platform-tools, the emulator, the Google Play system image)
+# names this one license in Google's package manifests (<uses-license ref="android-sdk-license"/>):
+# the Android Software Development Kit License Agreement. Setup shows its text, as Google publishes it in
+# the manifest sdkmanager reads, and downloads nothing from Google until it's been agreed to.
+TERMS_ID = "android-sdk-license"
+TERMS_NAME = "Android Software Development Kit License Agreement"
+TERMS_URL = "https://developer.android.com/studio/terms"
+TERMS_SOURCE = "https://dl.google.com/android/repository/repository2-3.xml"
+TERMS_RECORD = DATA / "terms-accepted.json"
+
+
+class TermsNotAccepted(RuntimeError):
+    """Setup would download from Google, but Google's current terms haven't been agreed to."""
+
+
+def parse_terms(manifest: bytes) -> str:
+    """The license text from one of Google's repository manifests."""
+    for lic in ET.fromstring(manifest).iter("license"):
+        if lic.get("id") == TERMS_ID and (lic.text or "").strip():
+            return lic.text.strip()
+    raise ValueError(f"no {TERMS_ID} in Google's package manifest")
+
+
+def terms_fingerprint(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def fetch_terms() -> str:
+    with urllib.request.urlopen(TERMS_SOURCE, timeout=30) as r:
+        return parse_terms(r.read())
+
+
+def terms_accepted(text: str) -> bool:
+    """Whether this exact text was agreed to: a changed license is asked about again."""
+    try:
+        record = json.loads(TERMS_RECORD.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return record.get("license") == TERMS_ID and record.get("sha1") == terms_fingerprint(text)
+
+
+def accept_terms(text: str) -> None:
+    TERMS_RECORD.parent.mkdir(parents=True, exist_ok=True)
+    TERMS_RECORD.write_text(json.dumps({
+        "license": TERMS_ID, "name": TERMS_NAME, "url": TERMS_URL, "sha1": terms_fingerprint(text),
+        "accepted": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }, indent=1), encoding="utf-8")
+
+
+def needs_google_download() -> bool:
+    return any(not p.marker.exists() and p.url.startswith("https://dl.google.com/") for p in PACKAGES)
+
+
+def install(progress: Progress = lambda m, f: print(m, end="\r"), terms: str | None = None) -> None:
+    """terms: the text of Google's terms as just shown, if the caller has it; fetched otherwise."""
+    if needs_google_download():
+        progress("Checking Google's terms...", -1)
+        if not terms_accepted(terms if terms is not None else fetch_terms()):
+            raise TermsNotAccepted(f"agree to Google's {TERMS_NAME} first ({TERMS_URL})")
     for pkg in PACKAGES:
         if pkg.marker.exists():
             continue

@@ -3,6 +3,8 @@ name = "androiddesktop"
 dynamic = ["version"]
 description = "WinDroid: Android apps as independent, frameless Windows windows, running in a headless Android VM."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 classifiers = [
     "Operating System :: Microsoft :: Windows",

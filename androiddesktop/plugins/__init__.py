@@ -16,8 +16,8 @@ makes an instance for that window and hands it an AppHandle, its view of the win
   it's minimized and go away with it.
 
 Hooks run on the window thread, so they must return quickly; slow work goes on threads of the
-plugin's own, which come back with app.call(fn). Plugins are on unless state.json's "plugins" says
-{"<name>": false}.
+plugin's own, which come back with app.call(fn). state.json's "plugins" ({"<name>": true or false}, set
+from Settings > Plugins) turns a plugin on or off; without an entry, its default_on decides.
 """
 from __future__ import annotations
 
@@ -296,6 +296,7 @@ class Plugin:
     name = ""  # short id, used in state.json
     title = ""
     packages: frozenset[str] = frozenset()
+    default_on = True  # until the user turns it on or off in Settings > Plugins
 
     def __init__(self, app: AppHandle) -> None:
         self.app = app
@@ -348,7 +349,7 @@ class PluginHost:
 
     @staticmethod
     def enabled(cls: type[Plugin]) -> bool:
-        return bool((state.get("plugins") or {}).get(cls.name, True))
+        return bool((state.get("plugins") or {}).get(cls.name, cls.default_on))
 
     def wants(self, package: str) -> bool:
         """Whether an enabled plugin is for this app. Any thread: a window asks before it starts."""
