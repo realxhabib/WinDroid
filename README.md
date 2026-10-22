@@ -85,7 +85,7 @@ The installer isn't code-signed yet, so **Microsoft Defender SmartScreen** may s
 the one published, compare its SHA-256 with the `.sha256` file next to it in the release:
 
 ```powershell
-Get-FileHash "$env:USERPROFILE\Downloads\WinDroid-Setup-0.1.0.exe"
+Get-FileHash "$env:USERPROFILE\Downloads\WinDroid-Setup-0.1.1.exe"
 ```
 
 **Updates.** Once a day, WinDroid asks GitHub whether there's a newer release. If there is, the

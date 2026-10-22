@@ -5,7 +5,7 @@ done, move it to **Shipped** with the version; when an idea turns into work, giv
 
 Status: `todo`, `doing`, `blocked` (waiting on something outside the code), `idea` (not decided yet).
 
-## Unreleased
+## Shipped in 0.1.1
 
 - MIT license (`LICENSE`).
 - Setup shows Google's Android SDK License Agreement, as Google publishes it, and downloads nothing
