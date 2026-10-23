@@ -47,8 +47,8 @@ drag, snap, pin to the taskbar or maximize like any other Windows app.
   where there is one: Settings > Android > **Run checks**, or `python -m androiddesktop doctor`.
 - **Android apps for AI agents.** An MCP server lets Claude (or any MCP client) run Android apps
   hidden, read and operate them, and hand one to you in a normal window when you should see it.
-  Settings > AI agents: **Connect Claude** (Claude Code), **Copy setup** (Claude Desktop) and the
-  agents' recent activity.
+  Settings > AI agents: **Connect Claude** (Claude Code, in one project folder you choose, or every
+  project if you ask for it), **Copy setup** (Claude Desktop) and the agents' recent activity.
 - **Performance.** Settings > Performance: how app windows are drawn right now (smooth, straight from
   the emulator, or video through scrcpy), and the video quality.
 - **Keeps itself up to date.** The launcher offers each new version, and installs it when you say so.
@@ -81,12 +81,16 @@ fix in the launcher (for example a **Turn it on** button for Windows Hypervisor 
    rights, and adds **WinDroid** to the Start menu. There's no Python or anything else to install.
 
 The installer isn't code-signed yet, so **Microsoft Defender SmartScreen** may stop it with
-"Windows protected your PC". Click **More info**, then **Run anyway**. To make sure the download is
-the one published, compare its SHA-256 with the `.sha256` file next to it in the release:
+"Windows protected your PC". Before you click **More info**, then **Run anyway**, make sure the
+download is the one published: its SHA-256 is in the release notes and in the `.sha256` file next to
+it in the release, and this prints the one of your download (they should be the same):
 
 ```powershell
 Get-FileHash "$env:USERPROFILE\Downloads\WinDroid-Setup-0.1.2.exe"
 ```
+
+The release build signs the installer by itself once a code-signing certificate is set up (see
+Release); the release notes then say it's signed.
 
 **Updates.** Once a day, WinDroid asks GitHub whether there's a newer release. If there is, the
 launcher says so; click **Update** and it downloads the new installer, checks it against its published
@@ -206,15 +210,24 @@ element id, and can add a screenshot when the tree isn't enough. When you should
 take over, the agent calls `show_to_user` and the app moves into a normal WinDroid window,
 exactly as the agent left it.
 
-The quickest way: **Connect Claude** in Settings > AI agents (or Ctrl+K, "connect claude") runs the
-command below for you, and **Copy setup** puts Claude Desktop's config on the clipboard.
+An agent connected to WinDroid can use your real Android, with your accounts signed in, so connect
+it only where you want that. **Connect Claude** in Settings > AI agents (or Ctrl+K, "connect claude")
+asks for a project folder and adds WinDroid to Claude Code for that project only: Claude Code's
+`local` scope, private to you and kept out of the project's files. Sessions started in other folders
+don't see it. **Every project** (Claude Code's `user` scope) makes it available to every Claude Code
+session on this PC, in any folder; WinDroid asks you to confirm that first. Each place it's connected
+gets a row with its own **Disconnect**. **Copy setup** puts Claude Desktop's config on the clipboard.
 
-By hand, add it to **Claude Code** (from a source checkout, use the Python of its venv;
-`--scope user` makes it available in every project):
+By hand, add it to **Claude Code** from the project's folder (from a source checkout, use the Python
+of its venv):
 
 ```powershell
-claude mcp add --scope user windroid -- "$env:LOCALAPPDATA\Programs\WinDroid\WinDroid.exe" mcp
+cd C:\path\to\your\project
+claude mcp add --scope local windroid -- "$env:LOCALAPPDATA\Programs\WinDroid\WinDroid.exe" mcp
 ```
+
+With `--scope user` instead, it's in every project. Earlier versions of WinDroid connected with
+`--scope user`; to keep it to one project, **Disconnect** that row and connect a project instead.
 
 Or to **Claude Desktop**, in `%APPDATA%\Claude\claude_desktop_config.json` (with your Windows user
 name), then restart it:
@@ -256,8 +269,12 @@ Things worth knowing:
 - **Locked Android.** If Android is locked after a start (screen-lock PIN), the agent is told to ask
   you to unlock it in the launcher; it never types your PIN. If Android isn't running, the first
   session starts it, without showing anything.
-- **Logs.** Every tool call goes to `%LOCALAPPDATA%\AndroidDesktop\logs\agent.log`, with its result
-  and timing. Text typed with `type_text` is logged as its length only, since it may be a password.
+- **Logs.** Every tool call goes to `%LOCALAPPDATA%\AndroidDesktop\logs\agent.log` (Settings > AI
+  agents > **Open logs**), with its arguments, the first 200 characters of its result and its timing;
+  Settings > AI agents shows the latest. Text typed with `type_text` never goes in it, since it may be
+  a PIN or a password: the call is logged as `text=<7 characters>`, and if an error or a crash quotes
+  the text, the log has `<typed text>` in its place. What `read_screen` returns starts with what's on
+  the screen; Android shows passwords as dots, and secure screens aren't read at all.
 - **Cleanup.** Ending a session, or the MCP server (when Claude Code exits), closes its hidden apps.
 
 ### Your iPhone or iPad
@@ -559,7 +576,8 @@ winget install JRSoftware.InnoSetup
 .venv\Scripts\python tools\build_installer.py
 ```
 
-That makes `dist\WinDroid-Setup-<version>.exe` and its `.sha256`:
+That makes `dist\WinDroid-Setup-<version>.exe` and its `.sha256`, unsigned unless a code-signing
+certificate is configured (see Release):
 
 - [PyInstaller](https://pyinstaller.org) (`packaging/windroid.spec`) freezes the package, its assets
   and its libraries (pywebview and pythonnet, pywin32, Pillow) into `dist\WinDroid`: `WinDroid.exe`
@@ -583,9 +601,22 @@ git push origin v0.2.0
 ```
 
 `.github/workflows/release.yml` checks that the tag matches the version, runs the lint and the unit
-tests, builds the installer on Windows and publishes it with its `.sha256` as a GitHub Release.
+tests, builds the installer on Windows and publishes it with its `.sha256` as a GitHub Release, with
+the SHA-256 and how to check it at the top of the release notes.
 Installed copies find it within a day (`androiddesktop/update.py`). Run the workflow by hand to
 build an installer without publishing it.
+
+**Code signing.** `tools/build_installer.py` signs `WinDroid.exe`, `windroid-cli.exe` and then the
+installer with `signtool` when a certificate is configured, and builds unsigned otherwise. The release
+workflow uses [Azure Artifact Signing](https://learn.microsoft.com/azure/artifact-signing/) (formerly
+Trusted Signing, a few dollars a month). To turn it on: in Azure, create an Artifact Signing account,
+pass its identity validation and make a Public Trust certificate profile, register an app (service
+principal) with the *Artifact Signing Certificate Profile Signer* role on the account, and add these
+repository secrets: `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`,
+`AZURE_SIGNING_ENDPOINT` (the account's region endpoint, such as `https://eus.codesigning.azure.net`),
+`AZURE_SIGNING_ACCOUNT` and `AZURE_SIGNING_PROFILE`. On your own PC, set `WINDROID_SIGN_DLIB` and
+`WINDROID_SIGN_METADATA` instead (or `WINDROID_SIGN_PFX` and `WINDROID_SIGN_PASSWORD` for a
+certificate file); the top of `tools/build_installer.py` says what each is.
 
 ## Known limitations
 
@@ -635,7 +666,8 @@ What's missing and what's next is tracked in [ROADMAP.md](ROADMAP.md).
 - In scrcpy windows, protected (`FLAG_SECURE`) screens update a few times a second instead of at full speed, and typing
   on them is limited to plain ASCII text. If one can't be moved to a secure display, the window says
   so (close it and reopen the app to leave that screen); it never just goes black.
-- The installer isn't code-signed, so SmartScreen warns about it (see Install).
+- The installer isn't code-signed yet, so SmartScreen warns about it (see Install). The build signs
+  it as soon as a certificate is configured (see Release).
 - iPhone & iPad: video is as smooth as Android draws it in the VM, about 20 to 40 frames a second for
   everyday apps (software encoding). On a test VM a tap's first frame reached the PC after about 70 to
   90 ms, almost all of it Android's own; the Wi-Fi and the device's decoding come on top. A secure

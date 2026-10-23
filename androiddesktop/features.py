@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from .app import Agent
 
 MCP_NAME = "androiddesktop"  # the server's name in Claude's config
+CLAUDE_SCOPES = ("local", "user")  # Claude Code: one project folder, or every project
 WHATS_NEW_SEEN = "whats_new_seen"  # state.json: the version whose What's new card was put away
 APP_WINDOWS = ("auto", "scrcpy")  # state.json "app_windows"
 ANDROID_VERSIONS = {36: "16", 35: "15", 34: "14"}
@@ -59,9 +60,9 @@ def optional(name: str) -> ModuleType | None:
         return None
 
 
-def run(args: list[str], timeout: float = 60) -> subprocess.CompletedProcess:
+def run(args: list[str], timeout: float = 60, cwd: str | None = None) -> subprocess.CompletedProcess:
     return subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                          timeout=timeout, creationflags=CREATE_NO_WINDOW)
+                          timeout=timeout, cwd=cwd, creationflags=CREATE_NO_WINDOW)
 
 
 # ------------------------------------------------------------------ Android
@@ -160,10 +161,31 @@ def desktop_snippet(command: list[str]) -> str:
 
 
 def registered(config: dict) -> dict | None:
-    """Our server in a Claude config (Claude Code's user scope, or Claude Desktop's), if it's there."""
+    """Our server in a Claude config (Claude Code's user scope or one of its projects, or Claude
+    Desktop's), if it's there."""
     servers = config.get("mcpServers") if isinstance(config, dict) else None
     entry = servers.get(MCP_NAME) if isinstance(servers, dict) else None
     return entry if isinstance(entry, dict) else None
+
+
+def claude_code_servers(config: dict) -> list[dict]:
+    """Where our server is in Claude Code's config: {"scope": "user", "folder": ""} for every project
+    (claude mcp add --scope user), {"scope": "local", "folder": <project>} for one project (--scope
+    local, from that folder); each with its "entry"."""
+    found = []
+    entry = registered(config)
+    if entry:
+        found.append({"scope": "user", "folder": "", "entry": entry})
+    projects = config.get("projects") if isinstance(config, dict) else None
+    for folder, project in (projects.items() if isinstance(projects, dict) else ()):
+        entry = registered(project)
+        if entry:
+            found.append({"scope": "local", "folder": str(Path(folder)), "entry": entry})
+    return found
+
+
+def same_folder(a: str, b: str) -> bool:
+    return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
 
 
 def same_command(entry: dict | None, command: list[str]) -> bool:
@@ -382,12 +404,13 @@ class Features:
 
     def agents(self) -> dict:
         command = mcp_command()
-        code = registered(self._read_json(claude_code_config()))
+        code = [{"scope": s["scope"], "folder": s["folder"], "current": same_command(s["entry"], command)}
+                for s in claude_code_servers(self._read_json(claude_code_config()))]
         desktop_path = claude_desktop_config()
         desktop = registered(self._read_json(desktop_path))
         return {"command": subprocess.list2cmdline(command),
-                "claudeCode": {"installed": find_claude() is not None, "connected": code is not None,
-                               "current": same_command(code, command)},
+                "claudeCode": {"installed": find_claude() is not None, "connected": bool(code),
+                               "current": any(s["current"] for s in code), "where": code},
                 "claudeDesktop": {"installed": desktop_path.parent.exists(), "connected": desktop is not None,
                                   "current": same_command(desktop, command)},
                 "hidden": self.hidden_apps(), "activity": parse_activity(tail(LOGS / "agent.log"))}
@@ -470,34 +493,45 @@ class Features:
         return "That didn't work. See androiddesktop.log."
 
     # ------------------------------------------------------------------ AI agents
-    def connect_claude(self) -> str:
-        """Register our MCP server with Claude Code, for every project (claude mcp add --scope user)."""
+    def connect_claude(self, scope: str = "local", folder: str = "") -> str:
+        """Register our MCP server with Claude Code: for one project folder ("local": claude mcp add
+        --scope local, run in that folder), or for every project ("user": --scope user). One folder is
+        the default: with user scope, every Claude Code session on this PC can use the user's Android."""
+        if scope not in CLAUDE_SCOPES:
+            return "Choose one project folder, or every project."
+        if scope == "local" and not (folder and Path(folder).is_dir()):
+            return "Choose a project folder."
         claude = find_claude()
         if claude is None:
             return "Claude Code isn't installed. Copy the Claude Desktop setup instead, or install Claude Code."
         command = mcp_command()
+        cwd = folder if scope == "local" else None
         try:
-            if registered(self._read_json(claude_code_config())):  # e.g. another copy's: this one replaces it
-                self._run([claude, "mcp", "remove", "--scope", "user", MCP_NAME])
-            r = self._run([claude, "mcp", "add", "--scope", "user", MCP_NAME, "--", *command])
+            if any(s["scope"] == scope and (scope == "user" or same_folder(s["folder"], folder))
+                   for s in claude_code_servers(self._read_json(claude_code_config()))):
+                self._run([claude, "mcp", "remove", "--scope", scope, MCP_NAME], cwd=cwd)  # e.g. another copy's
+            r = self._run([claude, "mcp", "add", "--scope", scope, MCP_NAME, "--", *command], cwd=cwd)
         except (OSError, subprocess.TimeoutExpired) as e:
             log(f"features: claude mcp add: {e!r}")
             return "Claude Code didn't answer. Try again."
         if r.returncode != 0:
             log(f"features: claude mcp add: {r.returncode} {(r.stderr or r.stdout).strip()[:300]}")
             return "Claude Code couldn't add it. See androiddesktop.log."
-        log("features: connected to Claude Code")
+        log(f"features: connected to Claude Code ({'every project' if scope == 'user' else folder})")
         return ""
 
-    def disconnect_claude(self) -> str:
+    def disconnect_claude(self, scope: str = "user", folder: str = "") -> str:
+        if scope not in CLAUDE_SCOPES or (scope == "local" and not folder):
+            return "Claude Code couldn't remove it."
         claude = find_claude()
         if claude is None:
             return "Claude Code isn't installed."
         try:
-            r = self._run([claude, "mcp", "remove", "--scope", "user", MCP_NAME])
+            r = self._run([claude, "mcp", "remove", "--scope", scope, MCP_NAME],
+                          cwd=folder if scope == "local" else None)
         except (OSError, subprocess.TimeoutExpired):
             return "Claude Code didn't answer. Try again."
-        log(f"features: disconnected from Claude Code ({r.returncode})")
+        log(f"features: disconnected from Claude Code ({scope}, {r.returncode})")
         return "" if r.returncode == 0 else "Claude Code couldn't remove it."
 
     # ------------------------------------------------------------------ settings in state.json

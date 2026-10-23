@@ -484,7 +484,10 @@ class Sessions:
         if not commands or any(ord(c) > 126 for c in text):
             raise GhostError("No text field has focus. Tap one, or pass its element_id.")
         for args in commands:
-            self._input(s, " ".join(args))
+            try:
+                self._input(s, " ".join(args))
+            except GhostError:  # its message repeats the text, which may be a password
+                raise GhostError("Android couldn't type the text as keys. Tap a text field first.") from None
         return True
 
     def _enter(self, s: Session, target: uitree.Node | None) -> None:

@@ -190,13 +190,7 @@ const hub = (() => {
     const status = a.hidden ? tag(`${a.hidden} hidden app${a.hidden > 1 ? "s" : ""} running`, "busy") :
                    connected ? tag("Connected", "ok") : tag("Not connected");
     const rows = [
-      row("Claude Code",
-        !code.installed ? "Not installed on this PC." :
-        code.current ? "Connected, for every project." :
-        code.connected ? "Connected to another copy of WinDroid." : "Adds WinDroid's MCP server, for every project.",
-        code.current ? okMark("Connected") : null,
-        code.current ? button("Disconnect", null, async () => { const m = await api().disconnect_claude(); toast(m || "Disconnected from Claude Code"); }) :
-        code.installed ? button(code.connected ? "Reconnect" : "Connect Claude", "\uE99A", connectClaude, "primary tiny") : null),
+      ...claudeCodeRows(code),
       row("Claude Desktop",
         desk.connected ? "In its config file." : "Paste the setup into claude_desktop_config.json, then restart Claude Desktop.",
         button(view.desktop ? "Copied" : "Copy setup", "\uE8C8", copyDesktop)),
@@ -214,8 +208,28 @@ const hub = (() => {
       h("div", { class: "card-actions" }, button("Open logs", "\uE838", () => api().open_folder("logs"))));
   }
 
-  async function connectClaude() {
-    const message = await api().connect_claude();
+  // Claude Code: one row per place WinDroid is connected (a project folder, or every project), then
+  // the connect buttons. One folder is the default; every project asks first.
+  function claudeCodeRows(code) {
+    if (!code.installed) return [row("Claude Code", "Not installed on this PC.", null, null)];
+    const where = code.where || [];
+    const rows = where.map((w) => row(w.scope === "user" ? "Claude Code, every project" : "Claude Code",
+      (w.scope === "user" ? "Every Claude Code session on this PC can use your Android apps." : `In ${w.folder} only.`) +
+        (w.current ? "" : " Set up by another copy of WinDroid."),
+      w.current ? okMark("Connected") : null,
+      button("Disconnect", null, async () => {
+        const m = await api().disconnect_claude(w.scope, w.folder);
+        toast(m || "Disconnected from Claude Code");
+      })));
+    rows.push(row(where.length ? "Another project" : "Claude Code",
+      "Adds WinDroid's MCP server to one project folder you choose. Every project is opt-in.",
+      where.some((w) => w.scope === "user" && w.current) ? null : button("Every project", null, () => connectClaude(true)),
+      button("Connect Claude", "\uE99A", () => connectClaude(false), "primary tiny")));
+    return rows;
+  }
+
+  async function connectClaude(everywhere) {
+    const message = await api().connect_claude(!!everywhere);
     toast(message || "Connected: Claude Code can use Android apps (new sessions)");
   }
 
@@ -463,7 +477,7 @@ const hub = (() => {
       A("camera", "Camera", "\uE722", () => openHub("camera"), "webcam", installed),
       A("camera-install", "Install the virtual camera", "\uE722", () => openHub("camera", () => cameraAction("install")), "webcam whole picture", cam.virtual && !cam.virtual.installed),
       A("camera-remove", "Remove the virtual camera", "\uE722", () => openHub("camera", () => cameraAction("uninstall")), "webcam uninstall", cam.virtual && cam.virtual.installed),
-      A("claude", "Connect Claude", "\uE99A", () => openHub("agents", connectClaude), "ai agent mcp claude code", (ag.claudeCode || {}).installed && !(ag.claudeCode || {}).current),
+      A("claude", "Connect Claude", "\uE99A", () => openHub("agents", () => connectClaude(false)), "ai agent mcp claude code project", (ag.claudeCode || {}).installed),
       A("claude-desktop", "Copy the Claude Desktop setup", "\uE8C8", () => openHub("agents", copyDesktop), "ai agent mcp config"),
       A("agents", "AI agents", "\uE99A", () => openHub("agents"), "mcp claude activity", installed),
       A("pair", "Pair an iPhone or iPad", "\uE8EA", () => openRemote(true), "ios safari phone tablet remote send", !!f.phones),

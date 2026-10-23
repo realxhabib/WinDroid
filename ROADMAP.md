@@ -8,6 +8,12 @@ Status: `todo`, `doing`, `blocked` (waiting on something outside the code), `ide
 ## Next release
 
 - A guide to writing plugins (`PLUGINS.md`) and an example plugin, Screen Text (`examples/plugins`).
+- Connect Claude asks for a project folder and connects Claude Code there only (`--scope local`);
+  every project (`--scope user`) is opt-in, after a warning. Each connection has its own Disconnect.
+- agent.log never holds text an agent typed, even when an error or a crash quotes it (`<typed text>`);
+  the README says where the log is and what's in it.
+- Release notes give the installer's SHA-256 and how to check it. The build code-signs WinDroid and
+  its installer once a certificate is configured (Azure Artifact Signing secrets, or a .pfx).
 
 ## Shipped in 0.1.2
 
@@ -49,7 +55,7 @@ Status: `todo`, `doing`, `blocked` (waiting on something outside the code), `ide
 | todo | Send to iPhone/iPad untested on a real device | Tested end to end with a desktop browser standing in for the phone. |
 | todo | Clipboard, sound, tray menu, Install APK, uninstall, Snap Layouts flyout never tested by hand | Run through each once and fix what's broken. |
 | todo | Taskbar pins use the Python icon | Windows wouldn't read icons from the data folder while it lived in Claude's private storage. Now that it's in the real folder, a window's relaunch icon may work again: re-test before turning it back on. |
-| todo | The installer isn't code-signed | SmartScreen warns on first run. Needs a code-signing certificate. |
+| idea | The installer isn't code-signed | SmartScreen warns on first run; the SHA-256 in the release notes is the check for now. Not paying for a certificate. Free route to try: SignPath Foundation signs open-source projects at no cost (apply at signpath.org; it signs in their CI, not with our secrets). The build already signs when a certificate is configured (README, Release). |
 | todo | Dock labels in the launcher wrap onto two lines | Cosmetic. |
 | idea | Names: the product is WinDroid, the Python package and data folder are still `androiddesktop` / `AndroidDesktop` | Renaming the data folder needs a migration; the package name is internal. |
 | todo | License notices for the libraries inside the installer | pywin32, Pillow, pywebview, pythonnet, cryptography and others are bundled; several of their licenses ask for their notices to ship with them. Collect them into a THIRD-PARTY-NOTICES file in the installer. |
