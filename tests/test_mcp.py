@@ -114,6 +114,24 @@ class Tools(unittest.TestCase):
         self.assertIn("element_id=404 -> ERROR No element 404", tapped)
         self.assertIn("text='Pause'", waited)  # what it waits for isn't a secret
 
+    def test_typed_text_is_kept_out_of_errors_in_the_log(self):
+        self.sessions.type_text = mock.Mock(side_effect=GhostError("input text 'hunter2 secret': boom"))
+        with mock.patch.object(mcp, "agent_log") as agent_log:
+            result = self.call("type_text", session="clock-1", text="hunter2 secret")
+            self.sessions.type_text.side_effect = RuntimeError("couldn't type 'hunter2'")
+            self.call("type_text", session="clock-1", text="hunter2 secret")
+        self.assertTrue(result["isError"])
+        logged = "\n".join(c.args[0] for c in agent_log.call_args_list)
+        self.assertNotIn("hunter2", logged)
+        self.assertNotIn("secret", logged)
+        self.assertIn("<typed text>", logged)
+
+    def test_redact(self):
+        self.assertEqual(mcp.redact("typed 1234 then", "1234"), "typed <typed text> then")
+        self.assertEqual(mcp.redact("keys a, b, c", "a b%c"), "keys a, b, c")  # pieces too short to matter
+        self.assertEqual(mcp.redact("input text 'it'\"'\"'s' x", "it's x"), "input text <typed text> x")
+        self.assertEqual(mcp.redact("nothing typed", None), "nothing typed")
+
     def test_agent_log_file(self):
         log.agent_log("hello from the tests")
         self.assertIn("hello from the tests", (log.LOGS / "agent.log").read_text(encoding="utf-8"))

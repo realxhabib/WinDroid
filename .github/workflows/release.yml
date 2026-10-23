@@ -2,6 +2,11 @@
 # androiddesktop/__init__.py) publishes it, with its SHA-256, as a GitHub Release: installed copies
 # offer it as an update (androiddesktop/update.py). Run by hand, it builds the installer as an artifact
 # and publishes nothing.
+#
+# Code signing runs when the repository has these secrets (Azure Artifact Signing, formerly Trusted
+# Signing; see tools/build_installer.py): AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET,
+# AZURE_SIGNING_ENDPOINT (e.g. https://eus.codesigning.azure.net), AZURE_SIGNING_ACCOUNT and
+# AZURE_SIGNING_PROFILE. Without them the installer is built unsigned.
 name: Release
 
 on:
@@ -15,6 +20,10 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
     steps:
       - uses: actions/checkout@v5
 
@@ -44,6 +53,28 @@ jobs:
           Start-Process $installer -Wait -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CURRENTUSER", "/DIR=$env:RUNNER_TEMP\InnoSetup"
           "$env:RUNNER_TEMP\InnoSetup" | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
 
+      - name: Set up code signing
+        if: env.AZURE_CLIENT_ID != ''
+        shell: pwsh
+        env:
+          ENDPOINT: ${{ secrets.AZURE_SIGNING_ENDPOINT }}
+          ACCOUNT: ${{ secrets.AZURE_SIGNING_ACCOUNT }}
+          PROFILE: ${{ secrets.AZURE_SIGNING_PROFILE }}
+        run: |
+          # signtool's plug-in for Azure Artifact Signing, checked against its checksum
+          $package = "$env:RUNNER_TEMP\artifactsigning.zip"
+          Invoke-WebRequest https://api.nuget.org/v3-flatcontainer/microsoft.artifactsigning.client/1.0.128/microsoft.artifactsigning.client.1.0.128.nupkg -OutFile $package
+          if ((Get-FileHash $package -Algorithm SHA256).Hash -ne "74BD7D27E6CE1051409C38D9B46BC8DF0400ECD643D51FFBF2AC00869061E40B") {
+            throw "The Artifact Signing client doesn't match its checksum"
+          }
+          Expand-Archive $package "$env:RUNNER_TEMP\artifactsigning"
+          @{ Endpoint = $env:ENDPOINT; CodeSigningAccountName = $env:ACCOUNT; CertificateProfileName = $env:PROFILE } |
+            ConvertTo-Json | Out-File -Encoding utf8 "$env:RUNNER_TEMP\signing.json"
+          "WINDROID_SIGN_DLIB=$env:RUNNER_TEMP\artifactsigning\bin\x64\Azure.CodeSigning.Dlib.dll" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          "WINDROID_SIGN_METADATA=$env:RUNNER_TEMP\signing.json" | Out-File -Append -Encoding utf8 $env:GITHUB_ENV
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" | Sort-Object FullName | Select-Object -Last 1
+          $signtool.DirectoryName | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
       - name: Lint and unit tests
         run: |
           python -m pyflakes androiddesktop tools tests packaging/windroid.py
@@ -66,5 +97,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $version = "${{ github.ref_name }}".TrimStart("v")
-          gh release create "${{ github.ref_name }}" --title "WinDroid $version" --generate-notes `
-            "dist/WinDroid-Setup-$version.exe" "dist/WinDroid-Setup-$version.exe.sha256"
+          $setup = "dist/WinDroid-Setup-$version.exe"
+          $hash = (Get-Content "$setup.sha256").Split(" ")[0]
+          $signed = (Get-AuthenticodeSignature $setup).Status -eq "Valid"
+          $check = if ($signed) { "It's code-signed." } else {
+            "It isn't code-signed yet, so Windows SmartScreen may warn about it: choose **More info**, then **Run anyway**." }
+          $notes = "Download **WinDroid-Setup-$version.exe** and run it. $check`n`n" +
+                   "SHA-256: ``$hash```n`n" +
+                   "Check it in PowerShell: ``Get-FileHash `$env:USERPROFILE\Downloads\WinDroid-Setup-$version.exe``"
+          gh release create "${{ github.ref_name }}" --title "WinDroid $version" --notes $notes --generate-notes `
+            $setup "$setup.sha256"

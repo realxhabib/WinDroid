@@ -220,11 +220,25 @@ class Api:
     def camera(self, command: str) -> str:
         return self._agent.features.camera(command)
 
-    def connect_claude(self) -> str:
-        return self._agent.features.connect_claude()
+    def connect_claude(self, everywhere: bool = False) -> str:
+        """Connect Claude Code in one project folder the user picks, or, asked for and confirmed, in
+        every project on this PC."""
+        window = self._agent.window
+        if everywhere:
+            if not window.create_confirmation_dialog(
+                    "Connect Claude to every project",
+                    "Every Claude Code session on this PC, in any project, will be able to use your Android "
+                    "apps. To keep it to one project, choose Connect Claude instead."):
+                return "Canceled"
+            return self._agent.features.connect_claude("user")
+        picked = window.create_file_dialog(webview.FOLDER_DIALOG)
+        folder = picked[0] if isinstance(picked, (list, tuple)) and picked else picked
+        if not folder:
+            return "Canceled"
+        return self._agent.features.connect_claude("local", str(folder))
 
-    def disconnect_claude(self) -> str:
-        return self._agent.features.disconnect_claude()
+    def disconnect_claude(self, scope: str = "user", folder: str = "") -> str:
+        return self._agent.features.disconnect_claude(scope, folder or "")
 
     def copy_claude_desktop(self) -> str:
         """Claude Desktop's config for our MCP server, now on the clipboard too."""

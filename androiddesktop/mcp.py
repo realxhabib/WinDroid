@@ -5,11 +5,14 @@ see them (ghost.py does the work).
     python -m androiddesktop mcp
 
 MCP over stdio is JSON-RPC 2.0, one message per line. Only tools are offered, so the little protocol
-there is lives here rather than in a dependency. Every tool call goes to logs/agent.log.
+there is lives here rather than in a dependency. Every tool call goes to logs/agent.log, without the
+text an agent types (it may be a password).
 """
 from __future__ import annotations
 
 import json
+import re
+import shlex
 import sys
 import time
 import traceback
@@ -111,6 +114,19 @@ def text(value: object) -> dict:
     return {"type": "text", "text": value if isinstance(value, str) else dumps(value)}
 
 
+def redact(message: str, typed) -> str:
+    """message without text an agent typed: an error from typing it may quote it, whole or in the pieces
+    it's typed in (protected.text_commands splits it at spaces and % and shell-quotes each piece).
+    Pieces under 3 characters stay: they say nothing and would garble the rest."""
+    if not isinstance(typed, str) or not typed:
+        return message
+    pieces = {typed, *(p for p in re.split(r"[ %]", typed) if len(p) >= 3)}
+    pieces |= {shlex.quote(p) for p in pieces}
+    for piece in sorted(pieces, key=len, reverse=True):
+        message = message.replace(piece, "<typed text>")
+    return message
+
+
 def summary(name: str, args: dict) -> str:
     """A tool call's arguments for the log. Typed text is left out: it may be a password."""
     parts = []
@@ -156,16 +172,17 @@ class Server:
     # ------------------------------------------------------------------ tools
     def call_tool(self, name: str, args: dict) -> dict:
         start = time.perf_counter()
+        typed = args.get("text") if name == "type_text" else None  # never in agent.log: it may be a password
         try:
             content = self._run(name, args)
             error = False
         except (GhostError, HelperError) as e:
             content, error = [text(str(e))], True
         except Exception as e:
-            agent_log(f"{name} crashed:\n{traceback.format_exc().rstrip()}")
+            agent_log(f"{name} crashed:\n{redact(traceback.format_exc().rstrip(), typed)}")
             content, error = [text(f"{name} failed: {e!r}")], True
         took = (time.perf_counter() - start) * 1000
-        outcome = content[0]["text"] if content and content[0]["type"] == "text" else ""
+        outcome = redact(content[0]["text"] if content and content[0]["type"] == "text" else "", typed)
         agent_log(f"{name} {summary(name, args)} -> {'ERROR ' if error else ''}"
                   f"{outcome[:200] + ('...' if len(outcome) > 200 else '')} ({took:.0f} ms)")
         return {"content": content, "isError": error}

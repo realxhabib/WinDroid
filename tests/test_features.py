@@ -335,7 +335,17 @@ class Snapshot(unittest.TestCase):
         (Path(self.logs.name) / "claude.json").write_text(
             json.dumps({"mcpServers": {"androiddesktop": features.server_entry(command)}}), encoding="utf-8")
         code = self.f.snapshot()["agents"]["claudeCode"]
-        self.assertEqual(code, {"installed": True, "connected": True, "current": True})
+        self.assertEqual(code, {"installed": True, "connected": True, "current": True,
+                                "where": [{"scope": "user", "folder": "", "current": True}]})
+
+    def test_claude_code_connected_in_one_project(self):
+        entry = features.server_entry(features.mcp_command())
+        (Path(self.logs.name) / "claude.json").write_text(json.dumps({"projects": {
+            "C:/Users/me/work": {"mcpServers": {"androiddesktop": entry}},
+            "C:/Users/me/other": {"mcpServers": {"something-else": entry}}}}), encoding="utf-8")
+        code = self.f.snapshot()["agents"]["claudeCode"]
+        self.assertTrue(code["connected"] and code["current"])
+        self.assertEqual(code["where"], [{"scope": "local", "folder": str(Path("C:/Users/me/work")), "current": True}])
 
     def test_activity_from_agent_log(self):
         (Path(self.logs.name) / "agent.log").write_text("2026-10-17 09:00:01 start_session package='Clock' -> clock-1\n",
@@ -435,35 +445,55 @@ class Actions(unittest.TestCase):
             self.assertIn("didn't work", self.f.camera("install"))
             self.assertIn("isn't part", self.f.camera("test on"))  # only install and uninstall
 
-    def test_connect_claude(self):
+    def test_connect_claude_to_one_project(self):
         with mock.patch.object(features, "find_claude", lambda: None):
-            self.assertIn("isn't installed", self.f.connect_claude())
+            self.assertIn("isn't installed", self.f.connect_claude("local", self.config.name))
+        self.assertIn("project folder", self.f.connect_claude("local", ""))
+        self.assertIn("project folder", self.f.connect_claude("local", str(Path(self.config.name) / "gone")))
+        self.assertIn("every project", self.f.connect_claude("project", self.config.name))
         self.run.assert_not_called()
         with mock.patch.object(features, "find_claude", lambda: "claude"):
-            self.assertEqual(self.f.connect_claude(), "")
+            self.assertEqual(self.f.connect_claude("local", self.config.name), "")
         args = self.run.call_args.args[0]
-        self.assertEqual(args[:7], ["claude", "mcp", "add", "--scope", "user", "androiddesktop", "--"])
+        self.assertEqual(args[:7], ["claude", "mcp", "add", "--scope", "local", "androiddesktop", "--"])
         self.assertEqual(args[7:], features.mcp_command())
+        self.assertEqual(self.run.call_args.kwargs["cwd"], self.config.name)  # local scope is the folder it's run in
+
+    def test_connect_claude_to_every_project(self):
+        with mock.patch.object(features, "find_claude", lambda: "claude"):
+            self.assertEqual(self.f.connect_claude("user"), "")
+        self.assertEqual(self.run.call_args.args[0][:5], ["claude", "mcp", "add", "--scope", "user"])
+        self.assertIsNone(self.run.call_args.kwargs["cwd"])
 
     def test_connect_claude_replaces_another_copys_server(self):
-        (Path(self.config.name) / "claude.json").write_text(
-            json.dumps({"mcpServers": {"androiddesktop": {"command": "elsewhere.exe", "args": []}}}), encoding="utf-8")
+        other = {"androiddesktop": {"command": "elsewhere.exe", "args": []}}
+        (Path(self.config.name) / "claude.json").write_text(json.dumps(
+            {"mcpServers": other, "projects": {self.config.name.replace("\\", "/"): {"mcpServers": other}}}),
+            encoding="utf-8")
         with mock.patch.object(features, "find_claude", lambda: "claude"):
-            self.assertEqual(self.f.connect_claude(), "")
-        self.assertEqual([c.args[0][1:3] for c in self.run.call_args_list], [["mcp", "remove"], ["mcp", "add"]])
+            self.assertEqual(self.f.connect_claude("local", self.config.name), "")
+            self.assertEqual([c.args[0][1:5] for c in self.run.call_args_list],
+                             [["mcp", "remove", "--scope", "local"], ["mcp", "add", "--scope", "local"]])
+            self.run.reset_mock()
+            self.assertEqual(self.f.connect_claude("local", tempfile.gettempdir()), "")  # another folder: just add
+            self.assertEqual([c.args[0][2] for c in self.run.call_args_list], ["add"])
 
     def test_connect_claude_fails(self):
         self.run.return_value = done(1, stderr="MCP server androiddesktop already exists")
         with mock.patch.object(features, "find_claude", lambda: "claude"):
-            self.assertIn("couldn't add", self.f.connect_claude())
+            self.assertIn("couldn't add", self.f.connect_claude("user"))
         self.run.side_effect = subprocess.TimeoutExpired("claude", 60)
         with mock.patch.object(features, "find_claude", lambda: "claude"):
-            self.assertIn("didn't answer", self.f.connect_claude())
+            self.assertIn("didn't answer", self.f.connect_claude("user"))
 
     def test_disconnect_claude(self):
         with mock.patch.object(features, "find_claude", lambda: "claude"):
-            self.assertEqual(self.f.disconnect_claude(), "")
-        self.assertEqual(self.run.call_args.args[0], ["claude", "mcp", "remove", "--scope", "user", "androiddesktop"])
+            self.assertEqual(self.f.disconnect_claude("user"), "")
+            self.assertEqual(self.run.call_args.args[0], ["claude", "mcp", "remove", "--scope", "user", "androiddesktop"])
+            self.assertEqual(self.f.disconnect_claude("local", self.config.name), "")
+            self.assertEqual(self.run.call_args.args[0][3:5], ["--scope", "local"])
+            self.assertEqual(self.run.call_args.kwargs["cwd"], self.config.name)
+            self.assertIn("couldn't remove", self.f.disconnect_claude("local", ""))
 
     def test_window_settings(self):
         self.assertTrue(self.f.set_app_windows("scrcpy"))
@@ -514,8 +544,12 @@ class ApiMethods(unittest.TestCase):
         f.hello_unlock.assert_called_with(True, "")
         self.api.camera("install")
         f.camera.assert_called_with("install")
+        self.agent.window = mock.Mock()
+        self.agent.window.create_file_dialog.return_value = ("C:\\work",)
         self.api.connect_claude()
-        self.api.disconnect_claude()
+        f.connect_claude.assert_called_with("local", "C:\\work")
+        self.api.disconnect_claude("local", "C:\\work")
+        f.disconnect_claude.assert_called_with("local", "C:\\work")
         self.api.set_plugin("notes", 0)
         f.set_plugin.assert_called_with("notes", False)
         self.api.set_app_windows("auto")
@@ -526,6 +560,18 @@ class ApiMethods(unittest.TestCase):
         for name in ("run_checks", "connect_claude", "disconnect_claude", "set_app_windows", "set_quality",
                      "check_updates", "dismiss_whats_new", "open_folder"):
             self.assertTrue(getattr(f, name).called, name)
+
+    def test_connect_claude_asks(self):
+        f, window = self.agent.features, mock.Mock()
+        self.agent.window = window
+        window.create_file_dialog.return_value = None
+        self.assertEqual(self.api.connect_claude(), "Canceled")  # no folder chosen
+        window.create_confirmation_dialog.return_value = False
+        self.assertEqual(self.api.connect_claude(True), "Canceled")
+        f.connect_claude.assert_not_called()
+        window.create_confirmation_dialog.return_value = True
+        self.api.connect_claude(True)
+        f.connect_claude.assert_called_once_with("user")  # every project only once it's confirmed
 
     def test_android(self):
         self.api.restart_android()
