@@ -5,7 +5,7 @@ done, move it to **Shipped** with the version; when an idea turns into work, giv
 
 Status: `todo`, `doing`, `blocked` (waiting on something outside the code), `idea` (not decided yet).
 
-## Next release
+## Shipped in 0.1.3
 
 - A guide to writing plugins (`PLUGINS.md`) and an example plugin, Screen Text (`examples/plugins`).
 - Connect Claude asks for a project folder and connects Claude Code there only (`--scope local`);
