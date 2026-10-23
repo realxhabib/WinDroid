@@ -86,7 +86,7 @@ download is the one published: its SHA-256 is in the release notes and in the `.
 it in the release, and this prints the one of your download (they should be the same):
 
 ```powershell
-Get-FileHash "$env:USERPROFILE\Downloads\WinDroid-Setup-0.1.2.exe"
+Get-FileHash "$env:USERPROFILE\Downloads\WinDroid-Setup-0.1.3.exe"
 ```
 
 The release build signs the installer by itself once a code-signing certificate is set up (see
