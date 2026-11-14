@@ -66,7 +66,7 @@ Status: `todo`, `doing`, `blocked` (waiting on something outside the code), `ide
 | Status | Feature | What it is |
 |---|---|---|
 | todo | Ask Android | A command bar (hotkey) where you type a task; Claude does it in hidden app sessions and hands you the window at the step that needs you (paying, sending). Builds on the agent layer. |
-| todo | Notifications | Android notifications as Windows notifications, with reply; clicking one opens the app's window. |
+| doing | Notifications | Android notifications as Windows notifications, with reply; clicking one opens the app's window on it (branch `claude/project-thread-fj309i`). Next: notification buttons besides reply (mark as read, archive), and a COM activator so toasts still work in the notification center after WinDroid quits. |
 | idea | Watchers | Standing jobs that check an app in the background (a delivery, a price, a reservation) and notify you on Windows. |
 | idea | Recorded skills | Do a flow once by hand; replay it later as a Start menu command, matched by meaning, not position. |
 | idea | Live widgets | Pin part of an app (an ETA, a balance, a streak) to the desktop as a small tile, kept fresh in the background. |

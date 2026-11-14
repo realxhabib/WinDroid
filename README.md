@@ -22,7 +22,7 @@ drag, snap, pin to the taskbar or maximize like any other Windows app.
   **Get apps** (Play Store) and **Install APK**.
 - **Settings for every feature.** The launcher's gear opens Android Desktop's own settings: a card
   per feature with how it stands right now and a button for what it does (Android, Security,
-  Camera, AI agents, Performance, About; Plugins, iPhone & iPad and updates where this version has
+  Camera, AI agents, Notifications, Performance, About; Plugins, iPhone & iPad and updates where this version has
   them). **Android settings** at the top opens Android's own Settings app. Also in the tray menu,
   and `pythonw -m androiddesktop settings`.
 - **Ctrl+K finds anything.** A command palette over every app and action: type a few letters of
@@ -49,6 +49,12 @@ drag, snap, pin to the taskbar or maximize like any other Windows app.
   hidden, read and operate them, and hand one to you in a normal window when you should see it.
   Settings > AI agents: **Connect Claude** (Claude Code, in one project folder you choose, or every
   project if you ask for it), **Copy setup** (Claude Desktop) and the agents' recent activity.
+- **Android's notifications on Windows.** A new notification from an Android app pops up as a
+  Windows notification, with the sender's photo or the app's icon. Click it and the app's window
+  opens on it (a chat opens on that conversation); a message has a reply box, so you can answer
+  without opening anything. Only what would make a phone buzz shows up: nothing silent or ongoing
+  (music, downloads), and nothing from the app whose window you're in. When Android removes one,
+  it leaves Windows too. Settings > Notifications turns it off.
 - **Performance.** Settings > Performance: how app windows are drawn right now (smooth, straight from
   the emulator, or video through scrcpy), and the video quality.
 - **Keeps itself up to date.** The launcher offers each new version, and installs it when you say so.
@@ -451,6 +457,18 @@ Launcher (WebView2)      App window (Win32, frameless)            App window (8t
 - **App catalog** (`catalog.py` and `helper/src/AppCatalog.java`): a small helper, run inside
   Android through `app_process` the way scrcpy runs its server, asks PackageManager for the
   launchable apps and renders their real icons, including adaptive icons with a rounded-square mask.
+- **Notifications** (`notifications.py`, `toast.py`, `helper/src/NotificationWatch.java`): a helper
+  inside Android, run through `app_process` as the shell user (which may read every app's
+  notifications), lists the active notifications once a second and reports each new, updated or
+  removed one as a JSON line: title, text, flags, whether it has a reply action, the sender's photo.
+  How much a notification may interrupt is its channel's importance, which the shell can't ask for
+  directly, so the helper reads it from `dumpsys notification` when a new one arrives. WinDroid shows
+  the ones Android would have sounded or popped up for (not silent, ongoing, group summaries or already
+  there when it started) as Windows toasts, under WinDroid's own Start menu identity, through
+  `Windows.UI.Notifications` called with plain ctypes. A click opens the app's window and, once the
+  app shows, sends the notification's own tap action (`contentIntent`) with that window's display as
+  its launch display; a reply fills the notification's `RemoteInput` and sends its action, as
+  Android's shade does. Nothing a notification says goes into the log.
 - **Agent** (`app.py`, `manager.py`): one process owns the VM, the windows, the tray icon and the
   launcher. Start menu shortcuts send their request to the running agent via `WM_COPYDATA`.
 - **Installed program and updates** (`packaging/`, `update.py`): see Development > Build the installer.
@@ -655,7 +673,10 @@ What's missing and what's next is tracked in [ROADMAP.md](ROADMAP.md).
   you cancel Windows Hello, the app keeps waiting until it gives up or another app comes to the front.
   The log then says "Android's lock screen stays up".
 - Google's passkeys and Play purchases haven't been tried with the fingerprint yet.
-- Notifications stay inside Android for now.
+- Notifications: a toast's click and reply work while WinDroid runs. Quitting takes its toasts out
+  of the notification center, since nothing would answer them (WinDroid has no COM activator yet).
+  There's no "mark as read" or other notification buttons yet; only the reply box and the click.
+  Dismissing a toast on Windows leaves the notification in Android.
 - AI agents: moving an app from its hidden display into a window changes its screen size, so Android
   recreates the app's screen, as when a phone rotates. Well-made apps keep their state (Clock's
   timer runs on); an app that doesn't may lose what's on screen, such as half-typed text.

@@ -290,6 +290,16 @@ const hub = (() => {
           segmented(QUALITY, p.quality, async (v) => { await api().set_quality(v); toast("New video windows use this"); }))));
   }
 
+  function notificationsCard(f) {
+    const n = f.notifications || {};
+    return card("notifications", "\uEA8F", ["#ff9ad5", "#c13cff"], "Notifications", "Android's notifications on Windows",
+      !n.on ? tag("Off") : n.reading ? tag("On", "ok") : tag("On"),
+      h("p", { class: "card-text", text: n.why || "" }),
+      h("div", { class: "rows" },
+        row("Show Android notifications", "Click one to open the app on it; answer messages from the notification. Only those that would make your phone buzz show here.",
+          toggle(n.on, async (on) => { await api().set_notifications(on); toast(on ? "Android notifications show on Windows" : "Android notifications stay in Android"); }, false, "Show Android notifications"))));
+  }
+
   function aboutCard(f) {
     const u = f.updates || {};
     return card("about", "\uE946", ["#a3b1c6", "#5c677d"], "WinDroid", `Version ${u.version || ""}`,
@@ -304,7 +314,8 @@ const hub = (() => {
 
   const CARDS = [["android", "Android", androidCard], ["security", "Security", securityCard], ["camera", "Camera", cameraCard],
                  ["agents", "AI agents", agentsCard], ["plugins", "Plugins", pluginsCard], ["phones", "iPhone & iPad", phonesCard],
-                 ["performance", "Performance", performanceCard], ["about", "About", aboutCard]];
+                 ["notifications", "Notifications", notificationsCard], ["performance", "Performance", performanceCard],
+                 ["about", "About", aboutCard]];
 
   // ------------------------------------------------------------ the page
   function render() {
@@ -486,6 +497,9 @@ const hub = (() => {
       A("video", "App windows: video (scrcpy)", "\uE945", async () => { await api().set_app_windows("scrcpy"); toast("New app windows use video"); }, "performance", perf.setting && perf.setting !== "scrcpy"),
       ...Object.entries(QUALITY).filter(([q]) => perf.quality && perf.quality !== q).map(([q, label]) =>
         A(`quality-${q}`, `Video quality: ${label}`, "\uE945", async () => { await api().set_quality(q); toast(`Video quality: ${label}`); }, "scrcpy performance")),
+      A("notifications", f.notifications && f.notifications.on ? "Stop showing Android notifications" : "Show Android notifications on Windows", "\uEA8F",
+        async () => { const on = !(f.notifications && f.notifications.on); await api().set_notifications(on); toast(on ? "Android notifications show on Windows" : "Android notifications stay in Android"); },
+        "notifications toast alerts messages reply", installed),
       A("updates", "Check for updates", "\uE895", async () => toast(await api().check_updates()), "version upgrade", upd.available),
       A("whats-new", "What's new", "\uE734", showNews, "features release notes", installed),
       A("get-apps", "Get apps from Google Play", "\uE719", () => api().open_app("com.android.vending"), "play store install", installed),

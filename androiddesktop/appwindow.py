@@ -32,7 +32,7 @@ import shlex
 import subprocess
 import threading
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 import win32api
 import win32con
@@ -164,6 +164,7 @@ class AppWindow:
         self.manager = manager
         self.app = app
         self.intent = intent
+        self.when_shown: list[Callable[[int], None]] = []  # each called with the display once the app shows
         self.adopting = adopt  # a hidden display to bring the app in from, once it shows (adopt())
         self.hwnd = 0
         self.child = 0
@@ -549,6 +550,9 @@ class AppWindow:
         if self.intent:
             self.run_intent(self.intent)
             self.intent = None
+        waiting, self.when_shown = self.when_shown, []
+        for fn in waiting:
+            self.then(fn)
         adopted = self.adopting
         if adopted is not None:
             self.adopt(adopted)
@@ -565,6 +569,13 @@ class AppWindow:
         if self.display_id is not None:
             command = f"am start --display {self.display_id} " + shlex.join(intent)
             threading.Thread(target=adb.shell, args=(command,), daemon=True).start()
+
+    def then(self, fn: Callable[[int], None]) -> None:
+        """fn(display) on a thread of its own, once the app shows in this window (now, if it does)."""
+        if self.display_id is None or not (self.child or self.remote):
+            self.when_shown.append(fn)
+            return
+        threading.Thread(target=fn, args=(self.display_id,), daemon=True, name=f"then-{self.app.package}").start()
 
     def adopt(self, display: int) -> None:
         """Take in the app as an AI agent left it on a hidden display of its own (ghost.py). scrcpy's launch

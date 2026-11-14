@@ -49,6 +49,7 @@ from . import adb, biometrics, camera, checks, datadir, emuview, features, ghost
 from .catalog import Catalog  # noqa: E402
 from .log import log, log_uncaught  # noqa: E402
 from .manager import TRAY_OPEN, TRAY_QUIT, TRAY_SETTINGS, TRAY_STOP, WindowManager, agent_running, send_to_agent  # noqa: E402
+from .notifications import Notifications  # noqa: E402
 from .panel import Panel  # noqa: E402
 from .paths import DATA, INSTANCE  # noqa: E402
 from .vm import LOCKED, OFF, RUNNING, VM  # noqa: E402
@@ -255,6 +256,9 @@ class Api:
     def set_quality(self, quality: str) -> bool:
         return self._agent.features.set_quality(quality)
 
+    def set_notifications(self, on: bool) -> bool:
+        return self._agent.features.set_notifications(bool(on))
+
     def check_updates(self) -> str:
         return self._agent.features.check_updates()
 
@@ -288,6 +292,10 @@ class Agent:
             self.remote_error = f"Missing a package: {e.name}. Run: pip install -e ."
             log(f"remote: unavailable: {e!r}")
         self.features = features.Features(self)
+        self.notifications = Notifications(
+            label=self._label, icon=self._app_icon, in_front=self.manager.in_front,
+            open=lambda package, then: self.open(package, then=then), notice=self.notice,
+            app_id=shortcuts.LAUNCHER_ID)
         self._hello_unlocking = threading.Lock()
         self.window: webview.Window | None = None
         self.loaded = False
@@ -413,8 +421,10 @@ class Agent:
         elif command == TRAY_QUIT:
             threading.Thread(target=self.quit, daemon=True).start()
 
-    def open(self, package: str, intent: list[str] | None = None, adopt: int | None = None) -> None:
-        """adopt: an AI agent's hidden display (ghost.py) the app is running on, to move into the window."""
+    def open(self, package: str, intent: list[str] | None = None, adopt: int | None = None,
+             then=None) -> None:
+        """adopt: an AI agent's hidden display (ghost.py) the app is running on, to move into the window;
+        then: called with the window's display once the app shows in it (a notification's tap action)."""
         if not self.setup_state["installed"]:
             self.show_launcher()
             return
@@ -428,7 +438,7 @@ class Agent:
         if self.catalog.get(package) is None:
             self.notice(f"Couldn't open {package}: it isn't installed in Android.")
             return
-        self.manager.open(package, intent, adopt)
+        self.manager.open(package, intent, adopt, then)
 
     def unlock(self, pin: str, remember: bool | None = None) -> str:
         was_locked = self.vm.state == LOCKED
@@ -448,6 +458,10 @@ class Agent:
     def _label(self, package: str) -> str:
         app = self.catalog.get(package)
         return app.label if app else package
+
+    def _app_icon(self, package: str) -> Path | None:
+        app = self.catalog.get(package)
+        return app.icon if app else None
 
     def _hello_anchor(self) -> int:
         """A window of ours to show Windows Hello above when no app window is asking: the launcher
@@ -583,6 +597,7 @@ class Agent:
         self.quitting = True
         self.manager.accepting = False  # new launches wait for us to finish, then start fresh
         self.shutdown()
+        self.notifications.android_down(wait=2)  # their toasts would do nothing once we're gone
         self.manager.remove_tray()
         try:
             self.window.destroy()
@@ -686,6 +701,10 @@ class Agent:
             threading.Thread(target=self.recheck, daemon=True).start()
         if vm_state == RUNNING:
             threading.Thread(target=self._now_running, daemon=True).start()
+        if vm_state in (RUNNING, LOCKED):
+            self.notifications.android_up()
+        elif changed and vm_state == OFF:
+            self.notifications.android_down()
         if changed and vm_state == LOCKED and hello.has_pin():
             threading.Thread(target=self._auto_unlock, daemon=True, name="hello-unlock").start()
 
