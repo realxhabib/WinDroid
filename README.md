@@ -459,9 +459,10 @@ Launcher (WebView2)      App window (Win32, frameless)            App window (8t
   Android through `app_process` the way scrcpy runs its server, asks PackageManager for the
   launchable apps and renders their real icons, including adaptive icons with a rounded-square mask.
 - **Notifications** (`notifications.py`, `toast.py`, `helper/src/NotificationWatch.java`): a helper
-  inside Android, run through `app_process` as the shell user (which may read every app's
-  notifications), lists the active notifications once a second and reports each new, updated or
-  removed one as a JSON line: title, text, flags, whether it has a reply action, the sender's photo.
+  inside Android, run through `app_process` as the shell user, registers a notification listener
+  the way SystemUI does (as a system service: the shell holds `STATUS_BAR_SERVICE`, though not
+  `ACCESS_NOTIFICATIONS`), lists the active notifications through it once a second and reports each
+  new, updated or removed one as a JSON line: title, text, flags, whether it has a reply action, the sender's photo.
   How much a notification may interrupt is its channel's importance, which the shell can't ask for
   directly, so the helper reads it from `dumpsys notification` when a new one arrives. WinDroid shows
   the ones Android would have sounded or popped up for (not silent, ongoing, group summaries or already

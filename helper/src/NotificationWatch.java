@@ -3,6 +3,7 @@ import android.app.Notification;
 import android.app.PendingIntent;
 import android.app.RemoteInput;
 import android.content.AttributionSource;
+import android.content.ComponentName;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.Intent;
@@ -12,9 +13,10 @@ import android.graphics.drawable.Drawable;
 import android.graphics.drawable.Icon;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.IBinder;
+import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.Process;
+import android.service.notification.NotificationListenerService;
 import android.service.notification.StatusBarNotification;
 import android.util.Base64;
 
@@ -41,7 +43,9 @@ import java.util.regex.Pattern;
  *
  *   CLASSPATH=/data/local/tmp/androiddesktop-notify.jar app_process / NotificationWatch
  *
- * It reads the notifications as the shell user may (ACCESS_NOTIFICATIONS) once a second and prints one
+ * It registers a notification listener as a system service, as SystemUI does (the shell holds
+ * STATUS_BAR_SERVICE, though not ACCESS_NOTIFICATIONS), reads the active notifications through it once a
+ * second and prints one
  * JSON line per change: {"event": "posted", "key": ..., "package": ..., "title": ..., "text": ...} for a
  * new or updated one ("initial": true for those already there when it started), {"event": "removed",
  * "key": ...} for one that went away. Commands come in on stdin, one JSON line each, answered with
@@ -61,9 +65,10 @@ public final class NotificationWatch {
     static final Object out = new Object();
     static OutputStream stdout;
     static Context context;
+    static NotificationListenerService listener;
     static Object manager;  // INotificationManager
+    static Object token;  // the listener's INotificationListener, which the manager knows it by
     static Method active;
-    static boolean withAttribution;
     static final Map<String, StatusBarNotification> current = new HashMap<>();
     static final Map<String, Long> posted = new HashMap<>();  // key -> postTime last reported
     static final Map<String, Integer> importance = new HashMap<>();
@@ -71,16 +76,7 @@ public final class NotificationWatch {
     public static void main(String[] args) throws Exception {
         stdout = new FileOutputStream(FileDescriptor.out);
         context = shellContext();
-        IBinder binder = (IBinder) Class.forName("android.os.ServiceManager")
-                .getMethod("getService", String.class).invoke(null, "notification");
-        manager = Class.forName("android.app.INotificationManager$Stub")
-                .getMethod("asInterface", IBinder.class).invoke(null, binder);
-        try {
-            active = manager.getClass().getMethod("getActiveNotificationsWithAttribution", String.class, String.class);
-            withAttribution = true;
-        } catch (NoSuchMethodException e) {
-            active = manager.getClass().getMethod("getActiveNotifications", String.class);  // before Android 11
-        }
+        listener = register();
         emit(new JSONObject().put("event", "hello").put("version", VERSION));
         Thread poller = new Thread(NotificationWatch::poll, "poll");
         poller.setDaemon(true);
@@ -130,7 +126,11 @@ public final class NotificationWatch {
             }
             if (Build.VERSION.SDK_INT >= 34) {
                 // The shell may start activities from the background; say we lend that to this intent.
-                options.setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED);
+                // From Android 16, ALLOWED only lends it while the sender is visible, which the shell
+                // never is; ALLOW_ALWAYS lends it regardless.
+                options.setPendingIntentBackgroundActivityStartMode(Build.VERSION.SDK_INT >= 36
+                        ? ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOW_ALWAYS
+                        : ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED);
             }
             n.contentIntent.send(context, 0, null, null, null, null, options.toBundle());
         } else if (cmd.equals("reply")) {
@@ -155,9 +155,11 @@ public final class NotificationWatch {
         boolean first = true;
         while (true) {
             try {
-                StatusBarNotification[] list = (StatusBarNotification[]) (withAttribution
-                        ? active.invoke(manager, "com.android.shell", null)
-                        : active.invoke(manager, "com.android.shell"));
+                // Not listener.getActiveNotifications(), which swallows errors and returns null.
+                Object slice = active.invoke(manager, token, null, 0);  // 0: TRIM_FULL
+                @SuppressWarnings("unchecked")
+                java.util.List<StatusBarNotification> list = (java.util.List<StatusBarNotification>)
+                        slice.getClass().getMethod("getList").invoke(slice);
                 Set<String> seen = new HashSet<>();
                 boolean askedImportance = false;
                 for (StatusBarNotification sbn : list) {
@@ -337,6 +339,41 @@ public final class NotificationWatch {
             stdout.write(line);
             stdout.flush();
         }
+    }
+
+    /**
+     * A listener for every user's notifications, registered the way SystemUI registers its own
+     * (NotificationListenerService.registerAsSystemService, a system API). The shell may call
+     * INotificationManager.registerListener because it holds STATUS_BAR_SERVICE; an ordinary listener
+     * would need an app the user approves. Its callbacks are ignored (we poll), so they run on a looper
+     * of their own rather than piling up on the main one, which never loops.
+     */
+    static NotificationListenerService register() throws Exception {
+        HandlerThread callbacks = new HandlerThread("listener");
+        callbacks.start();
+        Looper looper = callbacks.getLooper();
+        Context ctx = new ContextWrapper(context) {
+            @Override
+            public Looper getMainLooper() {
+                return looper;
+            }
+        };
+        NotificationListenerService l = new NotificationListenerService() {
+        };
+        NotificationListenerService.class
+                .getMethod("registerAsSystemService", Context.class, ComponentName.class, int.class)
+                .invoke(l, ctx, new ComponentName("com.android.shell", NotificationWatch.class.getName()), -1);
+        // -1: UserHandle.USER_ALL
+        Method m = NotificationListenerService.class.getDeclaredMethod("getNotificationInterface");
+        m.setAccessible(true);
+        manager = m.invoke(l);
+        java.lang.reflect.Field f = NotificationListenerService.class.getDeclaredField("mWrapper");
+        f.setAccessible(true);
+        token = f.get(l);
+        Class<?> listenerInterface = Class.forName("android.service.notification.INotificationListener");
+        active = manager.getClass().getMethod("getActiveNotificationsFromListener",
+                listenerInterface, String[].class, int.class);
+        return l;
     }
 
     /** As AgentHelper's: Android checks that the package a caller names is its own, the shell's. */
