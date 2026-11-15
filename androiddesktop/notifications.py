@@ -33,6 +33,7 @@ ONGOING, ONLY_ALERT_ONCE, FOREGROUND_SERVICE, GROUP_SUMMARY = 0x2, 0x8, 0x40, 0x
 IMPORTANCE_DEFAULT = 3  # below this, Android shows it without a sound or a heads-up
 QUIET_CATEGORIES = {"service", "progress", "transport", "sys", "status", "navigation", "stopwatch", "location_sharing"}
 REPLY_ECHO_SECS = 15
+SETTLE_SECS = 30  # after the reader starts: apps re-post their notifications as Android boots
 SYSTEM_PACKAGES = {"android", "com.android.systemui", "com.android.shell"}
 
 
@@ -211,6 +212,7 @@ class Notifications:
         self.on_change: Callable[[], None] = lambda: None
         self._lock = threading.Lock()
         self._errors = 0
+        self._started = 0.0  # when the reader said hello
 
     # ------------------------------------------------------------------ lifecycle
     def android_up(self) -> None:
@@ -260,6 +262,7 @@ class Notifications:
                 log(f"notifications: the reader is version {n.get('version')}, expected {VERSION}")
             else:
                 log("notifications: reading Android's notifications")
+            self._started = time.monotonic()
         elif kind == "posted":
             self._packages[n["key"]] = n.get("package", "")
             if listable(n):
@@ -269,7 +272,9 @@ class Notifications:
                 self._changed()
             # An app updates its notification with the reply just sent: no need to pop that up.
             echo = time.monotonic() - self._replied.get(n["key"], -60) < REPLY_ECHO_SECS
-            if worth_showing(n) and not echo and not self.in_front(n.get("package", "")):
+            # Right after Android starts, apps post again what they had before: list it, don't pop it up.
+            settling = time.monotonic() - self._started < SETTLE_SECS
+            if worth_showing(n) and not echo and not settling and not self.in_front(n.get("package", "")):
                 self._show(n)
         elif kind == "removed":
             self._packages.pop(n["key"], None)

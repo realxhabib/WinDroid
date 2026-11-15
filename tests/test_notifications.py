@@ -100,6 +100,15 @@ class Flow(unittest.TestCase):
         self.n._event({"event": "removed", "key": message()["key"]})
         self.n.toaster.remove.assert_called_once_with(tag)
 
+    def test_not_while_android_is_starting(self):
+        self.n._event({"event": "hello", "version": notifications.VERSION})
+        self.post()  # an app re-posting what it had before Android restarted
+        self.n.toaster.show.assert_not_called()
+        self.assertEqual(len(self.n.items()), 1)  # still in the list
+        with mock.patch.object(notifications.time, "monotonic", return_value=notifications.time.monotonic() + 60):
+            self.post(update=True)
+        self.n.toaster.show.assert_called_once()
+
     def test_not_while_its_window_is_in_front(self):
         self.front.add("com.example.chat")
         self.post()
