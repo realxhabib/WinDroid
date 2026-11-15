@@ -577,6 +577,8 @@ launcher in the Start menu itself (as **WinDroid**) and never updates itself; it
   WebCodecs in a desktop browser without a certificate. The unit tests include the web app's crypto
   (`tests/js/wdcrypto.test.js`, run through Node.js when it's installed).
 - `python tools/try_windows.py <package>...` opens app windows without the launcher.
+- `python tools/try_notifications.py` shows Android's new notifications as toasts, with click and
+  reply, in a process of its own, so a running agent and its Android carry on as they are.
 - `python tools/snap.py "<window title>" out.png` captures one window, for checking the UI.
 - `python tools/build_helper.py` rebuilds `androiddesktop/assets/appcatalog.jar` from
   `helper/src`. It needs a JDK, the Android SDK platform jar and Google's D8 in
