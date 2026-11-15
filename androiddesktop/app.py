@@ -45,7 +45,7 @@ import win32api  # noqa: E402
 import win32con  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from . import adb, biometrics, camera, checks, datadir, emuview, features, ghost, hello, runtime, shortcuts, state, update  # noqa: E402
+from . import adb, biometrics, camera, checks, datadir, emuview, features, ghost, hello, notifications, runtime, shortcuts, state, update  # noqa: E402
 from .catalog import Catalog  # noqa: E402
 from .log import log, log_uncaught  # noqa: E402
 from .manager import TRAY_OPEN, TRAY_QUIT, TRAY_SETTINGS, TRAY_STOP, WindowManager, agent_running, send_to_agent  # noqa: E402
@@ -259,6 +259,12 @@ class Api:
     def set_notifications(self, on: bool) -> bool:
         return self._agent.features.set_notifications(bool(on))
 
+    def open_notification(self, key: str) -> bool:
+        return self._agent.notifications.open_key(key)
+
+    def reply_notification(self, key: str, text: str) -> str:
+        return self._agent.notifications.reply(key, text)
+
     def check_updates(self) -> str:
         return self._agent.features.check_updates()
 
@@ -319,6 +325,7 @@ class Agent:
         self.manager.on_notice = self.notice
         self.manager.on_unlock = self.unlock_requested
         self.manager.on_window_action = self.window_action
+        self.notifications.on_change = lambda: self.push(apps=False)
         self.manager.start()
         self.fingerprint.listeners.append(lambda: self.push(apps=False))
         self.fingerprint.on_notice = self.notice
@@ -658,7 +665,8 @@ class Agent:
                      "checks": [asdict(c) for c in self.checks if c.level != checks.OK],
                      "hello": {"available": self.fingerprint.available, "enrolled": self.fingerprint.enrolled,
                                "enrolling": self.fingerprint.enrolling, "remembered": hello.has_pin()},
-               "remote": self.remote.snapshot() if self.remote else {"error": self.remote_error}}
+               "remote": self.remote.snapshot() if self.remote else {"error": self.remote_error},
+               "inbox": {"on": notifications.enabled(), "items": self.notifications.items()}}
         if apps:
             running = set(self.manager.running())
             out["apps"] = [{"pkg": a.package, "label": a.label, "system": a.system, "icon": self._icon_uri(a.icon),

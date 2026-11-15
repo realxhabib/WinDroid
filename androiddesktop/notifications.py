@@ -59,6 +59,26 @@ def worth_showing(n: dict) -> bool:
     return bool((n.get("title") or "").strip() or (n.get("text") or "").strip())
 
 
+def listable(n: dict) -> bool:
+    """Whether a notification belongs in WinDroid's list of Android's notifications: what Android's
+    own shade lists as a notification, silent ones included, but not ongoing ones (music, downloads)."""
+    flags = int(n.get("flags") or 0)
+    if n.get("package") in SYSTEM_PACKAGES or flags & (ONGOING | FOREGROUND_SERVICE | GROUP_SUMMARY):
+        return False
+    if int(n.get("importance", 1)) < 1:  # IMPORTANCE_NONE: Android doesn't show it at all
+        return False
+    return bool((n.get("title") or "").strip() or (n.get("text") or "").strip())
+
+
+def entry(n: dict, label: str, previous: dict | None = None) -> dict:
+    """One notification as the launcher lists it."""
+    picture = f"data:image/png;base64,{n['icon']}" if n.get("icon") else (previous or {}).get("picture", "")
+    return {"key": n["key"], "pkg": n.get("package", ""), "app": label, "title": (n.get("title") or "").strip(),
+            "text": (n.get("text") or "").strip()[:1000], "conversation": n.get("conversation") or "",
+            "time": int(n.get("postTime") or 0), "canOpen": bool(n.get("canOpen", True)),
+            "canReply": bool(n.get("canReply")), "replyLabel": n.get("replyLabel") or "", "picture": picture}
+
+
 def tag_for(key: str) -> str:
     """A toast tag for an Android notification key (Windows allows 64 characters; keys run longer)."""
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:32]
@@ -173,7 +193,8 @@ class Notifications:
 
     label(package) names an app; icon(package) is its icon file; in_front(package) says whether its
     window is the one in front; open(package, then) opens its window and calls then(display) once the
-    app shows in it; notice(text) tells the user something went wrong."""
+    app shows in it; notice(text) tells the user something went wrong. on_change() runs when the
+    list of Android's notifications (items()) changes."""
 
     def __init__(self, label: Callable[[str], str], icon: Callable[[str], Path | None],
                  in_front: Callable[[str], bool], open: Callable[[str, Callable[[int], None]], None],
@@ -186,6 +207,8 @@ class Notifications:
         self._packages: dict[str, str] = {}  # Android key -> package
         self._wanted = False
         self._replied: dict[str, float] = {}  # Android key -> when the user replied from Windows
+        self._active: dict[str, dict] = {}  # Android key -> entry(), for the launcher's list
+        self.on_change: Callable[[], None] = lambda: None
         self._lock = threading.Lock()
         self._errors = 0
 
@@ -239,6 +262,11 @@ class Notifications:
                 log("notifications: reading Android's notifications")
         elif kind == "posted":
             self._packages[n["key"]] = n.get("package", "")
+            if listable(n):
+                self._active[n["key"]] = entry(n, self.label(n.get("package", "")), self._active.get(n["key"]))
+                self._changed()
+            elif self._active.pop(n["key"], None) is not None:
+                self._changed()
             # An app updates its notification with the reply just sent: no need to pop that up.
             echo = time.monotonic() - self._replied.get(n["key"], -60) < REPLY_ECHO_SECS
             if worth_showing(n) and not echo and not self.in_front(n.get("package", "")):
@@ -246,6 +274,8 @@ class Notifications:
         elif kind == "removed":
             self._packages.pop(n["key"], None)
             self._replied.pop(n["key"], None)
+            if self._active.pop(n["key"], None) is not None:
+                self._changed()
             tag = tag_for(n["key"])
             if self._shown.pop(tag, None) is not None:
                 self._toaster().remove(tag)
@@ -270,6 +300,16 @@ class Notifications:
         # The app and when only: what it said stays out of the log.
         log(f"notifications: shown one from {package}")
 
+    def _changed(self) -> None:
+        try:
+            self.on_change()
+        except Exception as e:
+            log(f"notifications: {e!r}")
+
+    def items(self) -> list[dict]:
+        """Android's notifications now, newest first."""
+        return sorted(self._active.values(), key=lambda e: e["time"], reverse=True)
+
     @staticmethod
     def _picture(tag: str) -> Path:
         return PICTURES / f"{tag}.png"
@@ -279,6 +319,9 @@ class Notifications:
             self.toaster.clear(wait)
         self._shown.clear()
         self._packages.clear()
+        if self._active:
+            self._active.clear()
+            self._changed()
         for f in PICTURES.glob("*.png") if PICTURES.exists() else []:
             f.unlink(missing_ok=True)
 
@@ -290,22 +333,35 @@ class Notifications:
 
     # ------------------------------------------------------------------ the user's side
     def _activated(self, tag: str, arguments: str, reply: str) -> None:
+        """A toast clicked, or a reply sent from it."""
         key = self._shown.get(tag)
         if key is None:
             return  # Android dropped it meanwhile
-        package = self._packages.get(key, "")
         if arguments == "reply":
-            if not reply.strip():
-                return
-            try:
-                self._replied[key] = time.monotonic()
-                self.watch.call("reply", key=key, text=reply)
-                log(f"notifications: replied to one from {package}")
-            except RuntimeError as e:
-                self.notice(f"Couldn't send that reply to {self.label(package)}: {e}")
-            return
+            problem = self.reply(key, reply)
+            if problem:
+                self.notice(problem)
+        else:
+            self.open_key(key)
+
+    def reply(self, key: str, text: str) -> str:
+        """Answer a notification through its reply action. "" once sent, else what went wrong."""
+        if not text.strip():
+            return ""
+        package = self._packages.get(key, "")
+        try:
+            self._replied[key] = time.monotonic()
+            self.watch.call("reply", key=key, text=text)
+            log(f"notifications: replied to one from {package}")
+            return ""
+        except RuntimeError as e:
+            return f"Couldn't send that reply to {self.label(package)}: {e}"
+
+    def open_key(self, key: str) -> bool:
+        """Open the notification's app in its window, on what the notification is about."""
+        package = self._packages.get(key, "")
         if not package:
-            return
+            return False
 
         def tap(display: int) -> None:
             try:
@@ -313,3 +369,4 @@ class Notifications:
             except RuntimeError as e:
                 log(f"notifications: {package}: tap action: {e}")  # the window shows the app anyway
         self.open(package, tap)
+        return True

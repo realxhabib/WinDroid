@@ -147,6 +147,57 @@ class Flow(unittest.TestCase):
         self.assertEqual(self.opened, [])
 
 
+class List(unittest.TestCase):
+    """The launcher's list of Android's notifications (the bell)."""
+
+    def setUp(self):
+        temp_state(self)
+        self.opened: list = []
+        self.changes = 0
+        self.n = Notifications(label=lambda p: "Chat", icon=lambda p: None, in_front=lambda p: False,
+                               open=lambda p, then: self.opened.append((p, then)), notice=lambda t: None,
+                               app_id="AndroidDesktop.Launcher")
+        self.n.toaster, self.n.watch = mock.Mock(), mock.Mock()
+        self.n.on_change = self.count
+        p = mock.patch.object(notifications, "log")
+        p.start()
+        self.addCleanup(p.stop)
+
+    def count(self):
+        self.changes += 1
+
+    def test_lists_what_androids_shade_would(self):
+        self.assertTrue(notifications.listable(message(initial=True)))  # there before WinDroid started
+        self.assertTrue(notifications.listable(message(importance=2)))  # silent, but still listed
+        self.assertFalse(notifications.listable(message(importance=0)))
+        self.assertFalse(notifications.listable(message(flags=ONGOING)))
+        self.assertFalse(notifications.listable(message(flags=GROUP_SUMMARY)))
+        self.assertFalse(notifications.listable(message(package="android")))
+
+    def test_newest_first_and_kept_up_to_date(self):
+        self.n._event(message(initial=True, postTime=100))
+        self.n._event(message(key="0|com.example.chat|8|null|10123", title="Ana", postTime=200, icon="iVBOR"))
+        items = self.n.items()
+        self.assertEqual([i["title"] for i in items], ["Ana", "Sam"])
+        self.assertEqual(items[0]["picture"], "data:image/png;base64,iVBOR")
+        self.assertEqual(items[1]["app"], "Chat")
+        self.n._event(message(key="0|com.example.chat|8|null|10123", title="Ana", text="2 new", postTime=300))
+        self.assertEqual(self.n.items()[0]["picture"], "data:image/png;base64,iVBOR")  # the photo stays
+        self.n._event({"event": "removed", "key": message()["key"]})
+        self.assertEqual([i["title"] for i in self.n.items()], ["Ana"])
+        self.assertEqual(self.changes, 4)
+        self.n.android_down()
+        self.assertEqual(self.n.items(), [])
+
+    def test_open_and_reply_from_the_list(self):
+        self.n._event(message(initial=True))
+        self.assertTrue(self.n.open_key(message()["key"]))
+        self.assertEqual(self.opened[0][0], "com.example.chat")
+        self.assertFalse(self.n.open_key("gone"))
+        self.assertEqual(self.n.reply(message()["key"], "On my way"), "")
+        self.n.watch.call.assert_called_once_with("reply", key=message()["key"], text="On my way")
+
+
 class Card(unittest.TestCase):
     def test_card(self):
         self.assertFalse(features.notifications_card(False, False, RUNNING)["on"])

@@ -54,7 +54,8 @@ drag, snap, pin to the taskbar or maximize like any other Windows app.
   opens on it (a chat opens on that conversation); a message has a reply box, so you can answer
   without opening anything. Only what would make a phone buzz shows up: nothing silent or ongoing
   (music, downloads), and nothing from the app whose window you're in. When Android removes one,
-  it leaves Windows too. Settings > Notifications turns it off.
+  it leaves Windows too. The launcher's bell lists Android's current notifications, silent ones
+  included, with the same click and reply. Settings > Notifications turns it off.
 - **Performance.** Settings > Performance: how app windows are drawn right now (smooth, straight from
   the emulator, or video through scrcpy), and the video quality.
 - **Keeps itself up to date.** The launcher offers each new version, and installs it when you say so.

@@ -383,6 +383,7 @@ const hub = (() => {
     if (!state.setup.installed) return;
     closePalette();
     hideMenu();
+    if (inboxOpen) closeInbox();
     const first = !isOpen;
     isOpen = true;
     $("hub").hidden = false;
@@ -497,6 +498,7 @@ const hub = (() => {
       A("video", "App windows: video (scrcpy)", "\uE945", async () => { await api().set_app_windows("scrcpy"); toast("New app windows use video"); }, "performance", perf.setting && perf.setting !== "scrcpy"),
       ...Object.entries(QUALITY).filter(([q]) => perf.quality && perf.quality !== q).map(([q, label]) =>
         A(`quality-${q}`, `Video quality: ${label}`, "\uE945", async () => { await api().set_quality(q); toast(`Video quality: ${label}`); }, "scrcpy performance")),
+      A("inbox", "Android's notifications", "\uEA8F", () => { closeHub(); openInbox(); }, "notifications bell messages inbox", installed),
       A("notifications", f.notifications && f.notifications.on ? "Stop showing Android notifications" : "Show Android notifications on Windows", "\uEA8F",
         async () => { const on = !(f.notifications && f.notifications.on); await api().set_notifications(on); toast(on ? "Android notifications show on Windows" : "Android notifications stay in Android"); },
         "notifications toast alerts messages reply", installed),
