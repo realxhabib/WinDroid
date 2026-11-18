@@ -73,6 +73,22 @@ class CrashDetection(unittest.TestCase):
         with mock.patch.object(vm.adb, "online", return_value=True):
             self.assertEqual(machine.refresh(), RUNNING)
 
+    def test_emulator_that_only_dropped_off_adb_is_taken_back(self):
+        # adb lost the device for longer than a hiccup, but the emulator never exited: once adb sees it
+        # again, it's running (and notifications, the input helper and so on start again).
+        machine = self.running_vm(FakeProc(None))
+        with mock.patch.object(vm.adb, "online", return_value=False), mock.patch.object(vm.time, "sleep"):
+            self.assertEqual(machine.refresh(), OFF)
+        self.assertTrue(machine.emulator_alive())
+        with mock.patch.object(vm.adb, "online", return_value=True), \
+                mock.patch.object(vm.adb, "booted", return_value=True), \
+                mock.patch.object(vm.adb, "user_locked", return_value=False):
+            self.assertEqual(machine.refresh(), RUNNING)
+
+    def test_an_emulator_that_exited_is_not_alive(self):
+        self.assertFalse(self.running_vm(FakeProc(1)).emulator_alive())
+        self.assertFalse(self.running_vm(None).emulator_alive())
+
 
 class BootThatCannotHappen(unittest.TestCase):
     def test_fails_fast_with_the_reason(self):

@@ -878,8 +878,10 @@ class Agent:
         last_refresh = last_update_check = time.monotonic()
         while not self.quitting:
             time.sleep(5)
-            if self.vm.state in (RUNNING, LOCKED):
-                self.vm.refresh()  # notices an emulator that died (or was unlocked in its own window)
+            if self.vm.state in (RUNNING, LOCKED) or (self.vm.state == OFF and self.vm.emulator_alive()):
+                # Notices an emulator that died (or was unlocked in its own window), and takes back one
+                # that only dropped off adb for a while, which refresh() took for dead.
+                self.vm.refresh()
             if time.monotonic() - last_update_check > 3600:  # it asks GitHub once a day at most
                 last_update_check = time.monotonic()
                 self.updater.check()
