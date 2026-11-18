@@ -29,7 +29,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING, Any, Callable
 
-from . import __version__, adb, emuview, ghost, hello, runtime, state
+from . import __version__, adb, emuview, ghost, hello, notifications, runtime, state
 from .adb import CREATE_NO_WINDOW
 from .appwindow import SCRCPY_QUALITY
 from .log import log
@@ -303,6 +303,19 @@ def performance_card(app_windows: str, quality: str, vm_state: str, endpoint: bo
             "windows": {"emulator": on_emulator, "scrcpy": on_scrcpy}}
 
 
+# ------------------------------------------------------------------ notifications (notifications.py)
+def notifications_card(on: bool, reading: bool, vm_state: str) -> dict:
+    if not on:
+        why = "Off: Android's notifications stay in Android."
+    elif vm_state not in (RUNNING, LOCKED):
+        why = "On. They show once Android is running."
+    elif reading:
+        why = "On: new notifications from Android apps show on Windows."
+    else:
+        why = "On, but they aren't being read yet. If this stays, see the log."
+    return {"on": on, "reading": reading, "why": why}
+
+
 # ------------------------------------------------------------------ updates (update.py, when in this build)
 def updates_card(updater: Any) -> dict:
     out = {"version": __version__, "available": updater is not None, "managed": False, "offer": None}
@@ -356,6 +369,8 @@ class Features:
             "performance": lambda: performance_card(
                 state.get("app_windows") or "auto", state.get("scrcpy_quality") or "high", a.vm.state,
                 emuview.endpoint() is not None, emuview.link.disabled, windows),
+            "notifications": lambda: notifications_card(
+                notifications.enabled(), a.notifications.watch.running(), a.vm.state),
             "updates": lambda: updates_card(getattr(a, "updater", None)),
             "whatsNew": lambda: whats_new(state.get(WHATS_NEW_SEEN)),
         }
@@ -555,6 +570,13 @@ class Features:
             return False
         state.put("scrcpy_quality", quality)
         log(f"features: scrcpy quality: {quality}")
+        return True
+
+    def set_notifications(self, on: bool) -> bool:
+        a = self.agent
+        a.notifications.set_enabled(on)
+        if on and a.vm.state in (RUNNING, LOCKED):
+            a.notifications.android_up()
         return True
 
     def check_updates(self) -> str:

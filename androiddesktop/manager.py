@@ -216,15 +216,20 @@ class WindowManager:
         win32gui.DestroyMenu(menu)
 
     # ------------------------------------------------------------------ windows
-    def open(self, package: str, intent: list[str] | None = None, adopt: int | None = None) -> None:
+    def open(self, package: str, intent: list[str] | None = None, adopt: int | None = None,
+             then: Callable[[int], None] | None = None) -> None:
         """Open (or bring forward) an app's window; intent: optional `am start` arguments to run in it;
-        adopt: a display the app is running on hidden (an AI agent's, ghost.py), to bring it in from."""
-        self.call(lambda: self._open(package, intent, adopt))
+        adopt: a display the app is running on hidden (an AI agent's, ghost.py), to bring it in from;
+        then: called with the window's display once the app shows in it."""
+        self.call(lambda: self._open(package, intent, adopt, then))
 
-    def _open(self, package: str, intent: list[str] | None, adopt: int | None = None) -> None:
+    def _open(self, package: str, intent: list[str] | None, adopt: int | None = None,
+              then: Callable[[int], None] | None = None) -> None:
         if package in self.windows and not self.windows[package].closing:
             win = self.windows[package]
             win.focus()
+            if then:
+                win.then(then)
             if win.status == FAILED:
                 win.retry()
             if intent:
@@ -237,6 +242,8 @@ class WindowManager:
             self.on_notice(f"Couldn't open {package}: it isn't in Android's app list.")
             return
         win = AppWindow(self, app, intent, adopt)
+        if then:
+            win.when_shown.append(then)
         self.windows[package] = win
         self._empty.clear()
         win.create()
@@ -254,6 +261,11 @@ class WindowManager:
         for win in list(self.windows.values()):
             self.call(win.close)
         return self._empty.wait(timeout)
+
+    def in_front(self, package: str) -> bool:
+        """Whether this app's window is the one the user is in."""
+        win = self.windows.get(package)
+        return bool(win and win.hwnd and not win.closing and win32gui.GetForegroundWindow() == win.hwnd)
 
     def running(self) -> list[str]:
         return [p for p, w in self.windows.items() if not w.closing]

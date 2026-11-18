@@ -72,7 +72,7 @@ function renderSetup() {
   const showSetup = !s.installed;
   const inHub = !showSetup && window.hub && hub.isOpen(); // the settings page (hub.js) stands in for both
   $("setup").hidden = !showSetup;
-  $("home").hidden = showSetup || remoteOpen || inHub;
+  $("home").hidden = showSetup || remoteOpen || inboxOpen || inHub;
   $("dock").hidden = showSetup || inHub;
   $("setup-go").hidden = !!s.busy;
   $("setup-terms").hidden = !!s.busy;
@@ -273,6 +273,7 @@ let remoteOpen = false, qrTimer = 0, qrShown = false, pairedBefore = -1;
 function remote() { return state.remote || {}; }
 
 function openRemote(pair) {
+  if (inboxOpen) closeInbox();
   remoteOpen = true;
   $("remote").hidden = false;
   $("home").hidden = true;
@@ -384,6 +385,115 @@ $("remote-firewall").addEventListener("click", async () => {
   try { if (!(await api().remote_firewall())) toast("The firewall rule wasn't added"); } finally { b.disabled = false; }
 });
 
+// ------------------------------------------------------------ Android's notifications (the bell)
+let inboxOpen = false, lastInbox = "";
+const replying = new Map(); // key -> text typed so far, kept across re-renders
+
+function inbox() { return state.inbox || { on: true, items: [] }; }
+
+function openInbox() {
+  if (remoteOpen) closeRemote();
+  inboxOpen = true;
+  lastInbox = "";
+  $("inbox").hidden = false;
+  $("home").hidden = true;
+  renderInbox();
+}
+function closeInbox() {
+  inboxOpen = false;
+  $("inbox").hidden = true;
+  $("home").hidden = !state.setup.installed;
+}
+
+function ago(ms) {
+  const s = Math.max(0, (Date.now() - ms) / 1000);
+  if (s < 60) return "now";
+  if (s < 3600) return `${Math.floor(s / 60)} min`;
+  if (s < 86400) return `${Math.floor(s / 3600)} h`;
+  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function noteRow(n) {
+  const app = state.apps.find((a) => a.pkg === n.pkg) || {};
+  const row = document.createElement("div");
+  row.className = "note";
+  row.title = n.canOpen ? `Open in ${n.app || app.label || n.pkg}` : "";
+  const img = document.createElement("img");
+  img.alt = "";
+  img.src = n.picture || app.icon || "";
+  if (n.picture) img.className = "photo";
+  const body = document.createElement("div");
+  body.className = "note-body";
+  const top = document.createElement("div");
+  top.className = "note-top";
+  const name = document.createElement("span");
+  name.textContent = n.conversation && n.conversation !== n.title ? `${n.app} · ${n.conversation}` : n.app;
+  const when = document.createElement("time");
+  when.textContent = ago(n.time);
+  top.append(name, when);
+  const title = document.createElement("b");
+  title.textContent = n.title || n.app;
+  body.append(top, title);
+  if (n.text) {
+    const text = document.createElement("p");
+    text.textContent = n.text;
+    body.append(text);
+  }
+  if (n.canReply) {
+    const form = document.createElement("form");
+    const input = document.createElement("input");
+    input.placeholder = n.replyLabel || "Reply";
+    input.value = replying.get(n.key) || "";
+    input.addEventListener("input", () => replying.set(n.key, input.value));
+    input.addEventListener("click", (e) => e.stopPropagation());
+    const send = document.createElement("button");
+    send.className = "primary tiny";
+    send.textContent = "Send";
+    form.append(input, send);
+    form.addEventListener("click", (e) => e.stopPropagation());
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const text = input.value.trim();
+      if (!text) return;
+      send.disabled = input.disabled = true;
+      const problem = await api().reply_notification(n.key, text);
+      send.disabled = input.disabled = false;
+      if (problem) { toast(problem); return; }
+      replying.delete(n.key);
+      input.value = "";
+      toast("Sent");
+    });
+    body.append(form);
+  }
+  row.append(img, body);
+  row.addEventListener("click", () => { if (n.canOpen) api().open_notification(n.key); });
+  return row;
+}
+
+function renderInbox() {
+  const box = inbox(), items = box.on ? (box.items || []) : [];
+  const badge = $("inbox-badge");
+  badge.hidden = !items.length;
+  badge.textContent = items.length > 99 ? "99+" : String(items.length);
+  $("inbox-open").hidden = !state.setup.installed;
+  if (!inboxOpen) return;
+  const key = JSON.stringify([box, Math.floor(Date.now() / 60000)]);
+  if (key === lastInbox || $("inbox").contains(document.activeElement) && document.activeElement.tagName === "INPUT") return;
+  lastInbox = key;
+  $("inbox-count").textContent = items.length ? String(items.length) : "";
+  const up = state.vm.state === "running" || state.vm.state === "locked";
+  $("inbox-empty").hidden = !!items.length;
+  $("inbox-empty").textContent = !box.on ? "Android's notifications are off. Turn them on in Settings > Notifications."
+    : !up ? "Android isn't running." : "No notifications.";
+  const list = $("inbox-list");
+  list.innerHTML = "";
+  for (const n of items) list.appendChild(noteRow(n));
+}
+
+$("inbox-open").addEventListener("click", () => (inboxOpen ? closeInbox() : openInbox()));
+$("inbox-close").addEventListener("click", closeInbox);
+setInterval(() => { if (inboxOpen) renderInbox(); }, 30000); // keep "5 min" fresh
+
 // Called from Python with the latest state.
 window.ui = {
   update(patch) {
@@ -398,6 +508,7 @@ window.ui = {
     renderUpdate();
     renderGrid();
     renderRemote();
+    renderInbox();
     if (window.hub) hub.update(patch);
   },
   show: (page) => window.hub && hub.show(page), // "settings" or "palette", from Python
@@ -472,6 +583,7 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (!$("menu").hidden) hideMenu();
     else if (remoteOpen) closeRemote();
+    else if (inboxOpen) closeInbox();
     else if (input.value) { input.value = ""; state.query = ""; renderGrid(); }
     else api().hide();
     return;

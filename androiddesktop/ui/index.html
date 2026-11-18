@@ -173,6 +173,18 @@
     </div>
   </section>
 
+  <section class="remote inbox" id="inbox" hidden>
+    <header class="remote-head">
+      <button class="icon-btn" id="inbox-close" title="Back (Esc)"><span class="glyph">&#xE72B;</span></button>
+      <h2>Notifications</h2>
+      <span class="count" id="inbox-count"></span>
+    </header>
+    <div class="remote-body">
+      <p class="inbox-empty" id="inbox-empty"></p>
+      <div class="notes" id="inbox-list"></div>
+    </div>
+  </section>
+
   <section class="hub" id="hub" hidden>
     <header class="hub-head">
       <button class="icon-btn" id="hub-back" title="Back (Esc)"><span class="glyph">&#xE72B;</span></button>
@@ -188,6 +200,7 @@
     <button class="dock-btn" id="apk"><span class="glyph">&#xE7B8;</span><span>Install APK</span></button>
     <button class="dock-btn" id="remote-open"><span class="glyph">&#xE8EA;</span><span>iPhone &amp; iPad</span></button>
     <span class="spacer"></span>
+    <button class="icon-btn bell" id="inbox-open" title="Android's notifications"><span class="glyph">&#xEA8F;</span><i class="badge" id="inbox-badge" hidden></i></button>
     <button class="kbd-btn" id="palette-open" title="Search apps and actions"><span class="glyph">&#xE721;</span><kbd class="key">Ctrl K</kbd></button>
     <button class="icon-btn" id="settings" title="Settings (Ctrl+,)"><span class="glyph">&#xE713;</span></button>
   </footer>

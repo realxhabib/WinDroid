@@ -116,6 +116,10 @@ class VM:
             self._set(RUNNING)
         return self.state
 
+    def emulator_alive(self) -> bool:
+        """Whether the emulator we started is still running, whatever adb says."""
+        return self._proc is not None and self._proc.poll() is None
+
     def _died(self) -> bool:
         if self._proc is not None and self._proc.poll() is not None:
             return True

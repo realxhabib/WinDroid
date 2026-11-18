@@ -47,6 +47,7 @@ class FakeAgent:
         self.vm = types.SimpleNamespace(state=vm_state, detail="")
         self.manager = types.SimpleNamespace(windows={}, call=lambda fn: fn())
         self.fingerprint = types.SimpleNamespace(available=True, enrolled=1, enrolling=False)
+        self.notifications = types.SimpleNamespace(watch=types.SimpleNamespace(running=lambda: True))
         self.setup_state = {"installed": True}
         self.calls: list = []
         self.checks_found = [Check("hypervisor", "ok", "Virtualization is ready"),
@@ -303,7 +304,7 @@ class Snapshot(unittest.TestCase):
     def test_every_card(self):
         snap = self.f.snapshot()
         self.assertEqual(set(snap), {"installed", "android", "security", "camera", "agents", "plugins", "phones",
-                                     "performance", "updates", "whatsNew"})
+                                     "notifications", "performance", "updates", "whatsNew"})
         self.assertEqual((snap["android"]["memory"], snap["android"]["cores"]), (8, 6))
         self.assertEqual(snap["security"], {"hello": True, "unlock": True, "fingerprints": 1, "enrolling": False,
                                             "lock": "pin", "running": True})
@@ -312,6 +313,7 @@ class Snapshot(unittest.TestCase):
         self.assertIsNone(snap["plugins"])
         self.assertIsNone(snap["phones"])
         self.assertEqual(snap["performance"]["mode"], "emulator")
+        self.assertEqual((snap["notifications"]["on"], snap["notifications"]["reading"]), (True, True))
         self.assertEqual(snap["whatsNew"], {"version": __version__, "first": True})
 
     def test_webcams_are_looked_up_in_the_background(self):
